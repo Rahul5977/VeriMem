@@ -1,0 +1,23 @@
+[project]
+name = "verimem"
+version = "0.1.0"
+description = "VeriMem: an evidence-grading, experience-retrieving fact-checking agent"
+requires-python = ">=3.11,<3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "slow: hits the network or a model; skipped by default in CI",
+]

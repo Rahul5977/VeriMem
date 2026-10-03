@@ -1,0 +1,34 @@
+# Local dev on the Mac M3 (8 GB). CPU only. Python 3.11.
+# Training deps live in requirements-gpu.txt, for GPU-A / GPU-B (Linux or WSL2).
+
+# core
+python-dotenv>=1.0
+pyyaml>=6.0
+tqdm>=4.66
+numpy>=1.26,<2.1
+pandas>=2.2
+
+# Teacher + judge: hosted Qwen over an OpenAI-compatible endpoint (rule 8)
+openai>=1.50
+
+# retrieval
+requests>=2.32
+beautifulsoup4>=4.12
+trafilatura>=1.12
+tavily-python>=0.5
+
+# embeddings + store (CPU)
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+torch>=2.3
+transformers>=4.44
+
+# metrics
+scikit-learn>=1.5
+
+# demo
+gradio>=4.44
+
+# dev
+pytest>=8.0
+ruff>=0.6

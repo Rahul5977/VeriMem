@@ -1,0 +1,62 @@
+# Secrets
+.env
+.env.local
+
+# Caches (rule 1: cache/ is on disk, never in git)
+cache/**
+!cache/.gitkeep
+
+# Data: AVeriTeC / FEVER / knowledge store are downloaded, not committed
+data/**
+!data/.gitkeep
+
+# Experiment outputs: keep config/metrics/notes, drop heavy artefacts
+results/**/*.jsonl
+results/**/adapter/
+results/**/checkpoints/
+results/**/*.pt
+results/**/*.bin
+results/**/*.safetensors
+results/**/*.faiss
+
+# Model checkpoints
+checkpoints/
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# --- Local planning docs: not published ---
+CLAUDE.md
+ROADMAP.md
+PROGRESS.md
+
+# --- Ethics rule 10: fabricated pages are never published anywhere ---
+# The repo is public. Attack data stays on local disk; only the code that
+# generates it is tracked.
+attacks/**
+!attacks/__init__.py
+!attacks/*.py
+
+# --- Credentials of any kind ---
+*.key
+*.pem
+*.p12
+credentials.json
+service-account*.json
+.netrc
+
+# --- Local tool state ---
+.claude/settings.local.json

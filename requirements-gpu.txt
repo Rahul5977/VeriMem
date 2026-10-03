@@ -1,0 +1,18 @@
+# GPU-A (RTX 4070, 8 GB) and GPU-B (RTX 4050, 6 GB), under Linux or WSL2.
+# Kaggle/Colab is the backup. Never installed on the Mac.
+# Ada GPUs support bf16; bitsandbytes and vLLM are CUDA + Linux only.
+-r requirements.txt
+
+accelerate>=0.34
+peft>=0.13
+trl>=0.11
+datasets>=3.0
+bitsandbytes>=0.44
+sentencepiece>=0.2
+evaluate>=0.4
+
+# 4-bit QLoRA that fits 8 GB, plus fast inference
+unsloth>=2024.9
+
+# Bulk inference with a 4-bit base + LoRA adapter (Linux/WSL2 only)
+vllm>=0.6
