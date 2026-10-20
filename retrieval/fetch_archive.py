@@ -127,22 +127,40 @@ def archived_urls(claims: list[Claim], archived_only: bool = True) -> list[str]:
     return list(urls)
 
 
-def fetch_url(url: str, polite_delay: float = 1.0) -> str | None:
-    """Fetch one page, cached by URL. Returns None when it cannot be retrieved."""
-    cache = get_cache("fetch")
+def fetch_url(url: str, polite_delay: float = 1.0, attempts: int = 3) -> str | None:
+    """Fetch one page. Successes are cached; failures deliberately are not.
 
-    def download() -> str | None:
-        time.sleep(polite_delay * (0.5 + random.random()))
+    `get_or_compute` would happily cache a None, which turns one transient timeout or
+    rate-limit into a permanent hole in the pool that no re-run ever fills. Over
+    thousands of URLs against a service that throttles, that is the difference between a
+    resumable job and a quietly incomplete corpus. So a failure returns None without
+    being written, and the next run tries again.
+
+    HTTP 404 and 403 are treated as permanent and not retried; everything else gets a
+    backoff, since the archive rate-limits under load.
+    """
+    cache = get_cache("fetch")
+    key = {"url": url}
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
+
+    for attempt in range(attempts):
+        time.sleep(polite_delay * (0.5 + random.random()) + attempt * 4)
         try:
             request = Request(url, headers={"User-Agent": USER_AGENT})
             with urlopen(request, timeout=TIMEOUT) as response:
                 raw = response.read(MAX_BYTES)
             charset = response.headers.get_content_charset() or "utf-8"
-            return raw.decode(charset, errors="replace")
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError):
-            return None
-
-    return cache.get_or_compute({"url": url}, download)
+            text = raw.decode(charset, errors="replace")
+            cache.set(key, text)
+            return text
+        except HTTPError as exc:
+            if exc.code in (403, 404, 410):
+                return None  # the snapshot is genuinely gone; retrying cannot help
+        except (URLError, TimeoutError, OSError, ValueError):
+            pass
+    return None
 
 
 def build_pool(

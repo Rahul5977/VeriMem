@@ -218,3 +218,48 @@ def test_empty_file_does_not_crash_detection(tmp_path):
     from retrieval.store import open_store
 
     assert open_store(pool_file(tmp_path, [])).retrieve("0", "q", k=3) == []
+
+
+# --- failures must not be cached ----------------------------------------------------
+
+
+def test_a_failed_fetch_is_not_cached(tmp_path, monkeypatch):
+    """One transient timeout must not become a permanent hole in the pool."""
+    import core.cache as cache_mod
+    from retrieval import fetch_archive
+
+    monkeypatch.setenv("VERIMEM_CACHE_DIR", str(tmp_path))
+    cache_mod._CACHES.clear()
+    monkeypatch.setattr(cache_mod, "CACHE_DIR", tmp_path)
+
+    calls = []
+
+    def flaky(request, timeout=None):
+        calls.append(1)
+        raise TimeoutError("boom")
+
+    monkeypatch.setattr(fetch_archive, "urlopen", flaky)
+    assert fetch_archive.fetch_url("https://x.example/1", polite_delay=0, attempts=2) is None
+    assert len(calls) == 2, "should retry before giving up"
+    assert not list(tmp_path.rglob("*.json")), "a failure must leave nothing cached"
+    cache_mod._CACHES.clear()
+
+
+def test_a_permanent_404_is_not_retried(tmp_path, monkeypatch):
+    from urllib.error import HTTPError
+
+    import core.cache as cache_mod
+    from retrieval import fetch_archive
+
+    monkeypatch.setattr(cache_mod, "CACHE_DIR", tmp_path)
+    cache_mod._CACHES.clear()
+    calls = []
+
+    def gone(request, timeout=None):
+        calls.append(1)
+        raise HTTPError("u", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(fetch_archive, "urlopen", gone)
+    assert fetch_archive.fetch_url("https://x.example/1", polite_delay=0, attempts=3) is None
+    assert len(calls) == 1, "404 is permanent; retrying wastes time"
+    cache_mod._CACHES.clear()
