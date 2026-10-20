@@ -32,6 +32,8 @@ from retrieval.store import GoldEvidenceSource, open_store
 # Measured from the prompts in agent/baselines.py; used only for the pre-run estimate.
 AVG_INPUT_TOKENS = {"no_retrieval": 120, "plain_rag": 1400}
 AVG_OUTPUT_TOKENS = 90
+# Measured on an 8 GB Mac running qwen2.5:7b through Ollama, Oct 2026.
+SECONDS_PER_CALL = 18
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -46,7 +48,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="'gold' is an ORACLE upper bound, not a baseline",
     )
     p.add_argument("--split", default="dev")
-    p.add_argument("--limit", type=int, default=20)
+    p.add_argument(
+        "--limit", type=int, default=None, help="claims to run; default is the whole split"
+    )
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--seed", type=int, default=13)
     p.add_argument("--name", default=None, help="run name; default <system>-<split>")
@@ -77,10 +81,12 @@ def run_one(system: str, claims, llm, source, args) -> tuple[list, dict]:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
-    claims = sample(load_averitec(args.data, args.split), args.limit, args.seed)
+    every = load_averitec(args.data, args.split)
+    claims = sample(every, args.limit, args.seed)
     if not claims:
         raise SystemExit(f"No claims loaded from {args.data}")
-    print(f"[verimem] {len(claims)} claims from {args.data}")
+    scope = "the whole split" if len(claims) == len(every) else f"a seed-{args.seed} sample"
+    print(f"[verimem] {len(claims)} of {len(every)} claims from {args.data} ({scope})")
     print(f"[verimem] gold labels: {label_counts(claims)}")
 
     systems = list(SYSTEMS) if args.system == "both" else [args.system]
@@ -119,6 +125,15 @@ def main(argv: list[str] | None = None) -> int:
     free = is_free(llm.base_url)
     print(f"[verimem] endpoint {llm.base_url} ({llm.provider}), model {llm.model}")
     print(f"[verimem] estimated cost: ${total:.4f}" + ("  (local endpoint, free)" if free else ""))
+
+    n_calls = len(claims) * len(systems)
+    if n_calls > 100:
+        # Cached calls return instantly, so this is a worst case, not a prediction.
+        print(
+            f"[verimem] {n_calls} calls; up to ~{n_calls * SECONDS_PER_CALL / 3600:.1f} h "
+            f"at {SECONDS_PER_CALL}s/call if none are cached. Ctrl-C now if that is not "
+            f"what you meant."
+        )
 
     if args.dry_run:
         print("[verimem] --dry-run: stopping before any call.")
