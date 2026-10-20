@@ -169,34 +169,34 @@ def build_pool(
     workers: int = 4,
     polite_delay: float = 1.0,
 ) -> dict[str, int]:
-    """Fetch every URL and write one JSONL row per page: {url, url2text}."""
-    stats = {"requested": len(urls), "fetched": 0, "failed": 0, "empty": 0, "sentences": 0}
-    rows: list[dict[str, object]] = []
+    """Fetch every URL and write one JSONL row per page: {url, url2text}.
+
+    Rows are written as they arrive rather than accumulated and dumped at the end, so a
+    run killed at hour three still leaves a usable pool of everything fetched so far.
+    """
+    stats = {"requested": len(urls), "fetched": 0, "failed": 0, "sentences": 0}
 
     def work(url: str) -> tuple[str, list[str]]:
         html = fetch_url(url, polite_delay)
-        if not html:
-            return url, []
-        return url, split_sentences(extract_text(html))
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for i, (url, sentences) in enumerate(pool.map(work, urls), start=1):
-            if not sentences:
-                stats["failed" if not fetch_url(url, 0) else "empty"] += 1
-            else:
-                stats["fetched"] += 1
-                stats["sentences"] += len(sentences)
-                rows.append({"url": url, "url2text": sentences})
-            if i % 25 == 0 or i == len(urls):
-                print(
-                    f"  [{i}/{len(urls)}] ok={stats['fetched']} "
-                    f"failed={stats['failed']} empty={stats['empty']}"
-                )
+        return (url, split_sentences(extract_text(html))) if html else (url, [])
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as fh:
-        for row in rows:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    with out_path.open("w", encoding="utf-8") as fh, ThreadPoolExecutor(workers) as pool:
+        for i, (url, sentences) in enumerate(pool.map(work, urls), start=1):
+            if sentences:
+                fh.write(json.dumps({"url": url, "url2text": sentences}, ensure_ascii=False) + "\n")
+                fh.flush()  # survive a kill
+                stats["fetched"] += 1
+                stats["sentences"] += len(sentences)
+            else:
+                stats["failed"] += 1
+            if i % 25 == 0 or i == len(urls):
+                done = stats["fetched"] + stats["failed"]
+                print(
+                    f"  [{i}/{len(urls)}] ok={stats['fetched']} failed={stats['failed']} "
+                    f"({stats['fetched'] / max(done, 1):.0%} success)",
+                    flush=True,
+                )
     return stats
 
 
