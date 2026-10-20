@@ -63,10 +63,22 @@ def run_one(system: str, claims, llm, source, args) -> tuple[list, dict]:
     fn = SYSTEMS[system]
     trajectories = []
     for i, claim in enumerate(claims, start=1):
-        if system == "plain_rag":
-            trajectories.append(fn(claim, llm, source, k=args.k))
-        else:
-            trajectories.append(fn(claim, llm))
+        try:
+            if system == "plain_rag":
+                trajectories.append(fn(claim, llm, source, k=args.k))
+            else:
+                trajectories.append(fn(claim, llm))
+        except Exception as exc:  # noqa: BLE001 - any endpoint failure lands here
+            if "Connection" not in type(exc).__name__ and "Connection" not in str(exc):
+                raise
+            # Every completed call is already cached, so this is a pause, not a loss.
+            raise SystemExit(
+                f"\nThe endpoint stopped responding at claim {i}/{len(claims)} "
+                f"({system}).\n"
+                f"  {llm.base_url} refused the connection.\n"
+                f"  {i - 1} calls in this system are cached and will replay instantly.\n"
+                f"  Restart the server and run the same command again to resume."
+            ) from exc
         print(f"  [{i}/{len(claims)}] {trajectories[-1].verdict:<22} {claim.claim[:58]}")
 
     labelled = [t for t in trajectories if t.gold_label]
