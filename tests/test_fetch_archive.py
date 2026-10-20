@@ -182,3 +182,39 @@ def test_pool_tags_provenance(tmp_path):
 
 def test_empty_pool_is_safe(tmp_path):
     assert PooledKnowledgeStore(pool_file(tmp_path, [])).retrieve("1", "q", k=5) == []
+
+
+# --- store auto-detection (a pooled file in KnowledgeStore retrieves nothing) -------
+
+
+def test_open_store_detects_a_pooled_file(tmp_path):
+    from retrieval.store import PooledKnowledgeStore, open_store
+
+    path = pool_file(tmp_path, [{"url": "https://a.org/1", "url2text": ["metro opened."] * 4}])
+    assert isinstance(open_store(path), PooledKnowledgeStore)
+
+
+def test_open_store_detects_a_claim_keyed_file(tmp_path):
+    from retrieval.store import KnowledgeStore, open_store
+
+    path = pool_file(
+        tmp_path, [{"claim_id": 0, "url": "https://a.org/1", "url2text": ["metro opened."] * 4}]
+    )
+    assert isinstance(open_store(path), KnowledgeStore)
+
+
+def test_pooled_file_actually_returns_evidence_through_open_store(tmp_path):
+    """The regression: KnowledgeStore returns nothing for a pooled file."""
+    from retrieval.store import KnowledgeStore, open_store
+
+    path = pool_file(
+        tmp_path, [{"url": "https://a.org/1", "url2text": ["The Kochi metro opened in 2017."] * 4}]
+    )
+    assert KnowledgeStore(path).retrieve("0", "Kochi metro", k=5) == []
+    assert open_store(path).retrieve("0", "Kochi metro", k=5) != []
+
+
+def test_empty_file_does_not_crash_detection(tmp_path):
+    from retrieval.store import open_store
+
+    assert open_store(pool_file(tmp_path, [])).retrieve("0", "q", k=3) == []

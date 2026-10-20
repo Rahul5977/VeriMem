@@ -27,7 +27,7 @@ from core.paths import run_dir
 from eval.datasets import label_counts, load_averitec, sample
 from eval.metrics import score
 from experience.format import write_jsonl
-from retrieval.store import GoldEvidenceSource, KnowledgeStore
+from retrieval.store import GoldEvidenceSource, open_store
 
 # Measured from the prompts in agent/baselines.py; used only for the pre-run estimate.
 AVG_INPUT_TOKENS = {"no_retrieval": 120, "plain_rag": 1400}
@@ -97,12 +97,20 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit("--store is required for plain_rag (or use --evidence gold)")
             print("[verimem] no --store given; plain_rag would run with no evidence")
         else:
-            source = KnowledgeStore(args.store)
+            source = open_store(args.store)
+            print(f"[verimem] store: {type(source).__name__} from {args.store}")
             missing = [c.id for c in claims if not source.has(str(c.id))]
+            if len(missing) == len(claims):
+                # Always a wrong path or the wrong store layout, never a real result.
+                raise SystemExit(
+                    f"No documents for ANY of the {len(claims)} claims in {args.store}. "
+                    "Plain RAG would run with no evidence at all, which is not a baseline. "
+                    "Check the path and the file layout."
+                )
             if missing:
                 print(
-                    f"[verimem] WARNING: {len(missing)}/{len(claims)} claims have no documents "
-                    f"in the store; they will be verified with no evidence",
+                    f"[verimem] WARNING: {len(missing)}/{len(claims)} claims have no documents; "
+                    f"they will be verified with no evidence",
                     file=sys.stderr,
                 )
 

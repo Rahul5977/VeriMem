@@ -209,3 +209,25 @@ class PooledKnowledgeStore:
             )
             for pid, score in self._index.search(query, k=k)
         ]
+
+
+def open_store(path: Path | str, apply_blocklist: bool = True) -> EvidenceSource:
+    """Pick the right store for the file's layout.
+
+    Two shapes exist and they are not interchangeable. The official AVeriTeC dump keys
+    documents by `claim_id`; a pool rebuilt from archived sources has no claim ids and is
+    searched as one corpus. Handing a pooled file to `KnowledgeStore` silently retrieves
+    nothing for every claim -- which looks like a bad retriever rather than a bad path,
+    so the layout is detected rather than configured.
+    """
+    path = Path(path)
+    if path.is_dir():
+        return KnowledgeStore(path, apply_blocklist)
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                keyed = "claim_id" in json.loads(line)
+                break
+        else:
+            keyed = False
+    return (KnowledgeStore if keyed else PooledKnowledgeStore)(path, apply_blocklist)
