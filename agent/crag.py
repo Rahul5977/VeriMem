@@ -90,8 +90,14 @@ def run_crag(
     source: EvidenceSource,
     scorer: RelevanceScorer,
     cfg: RunConfig | None = None,
+    force_action: Action | None = None,
 ) -> CragResult:
-    """Retrieve, grade, route, refine and/or re-search, then verify."""
+    """Retrieve, grade, route, refine and/or re-search, then verify.
+
+    `force_action` overrides the router. Threshold tuning (P1.7) needs each branch's
+    verdict for the same claim, so it can sweep the grid without re-running the
+    pipeline at every grid point. Nothing else should pass it.
+    """
     cfg = cfg or RunConfig()
     steps: list[Step] = []
 
@@ -99,7 +105,7 @@ def run_crag(
     steps.append(Step("retrieve", f"top-{cfg.top_k_evidence}", score=float(len(evidence))))
 
     grade = grade_evidence(claim.claim, evidence, scorer)
-    action = route(grade, cfg.crag_upper_threshold, cfg.crag_lower_threshold)
+    action = force_action or route(grade, cfg.crag_upper_threshold, cfg.crag_lower_threshold)
     steps.append(Step("grade", "max strip-level relevance", score=round(grade, 4)))
     steps.append(Step("route", action, score=round(grade, 4)))
 
