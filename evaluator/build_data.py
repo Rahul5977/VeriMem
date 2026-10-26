@@ -35,6 +35,7 @@ from typing import Any
 
 from core.paths import DATA_DIR
 from eval.datasets import Claim, load_averitec
+from retrieval.bm25 import BM25Index
 from retrieval.store import PooledKnowledgeStore
 
 POSITIVE, HARD_NEGATIVE, EASY_NEGATIVE = "positive", "hard_negative", "easy_negative"
@@ -100,8 +101,18 @@ def build_pairs(
         stats["claims"] += 1
 
         for url in present:
-            for _pid, text in by_url[url][:max_positives]:
-                pairs.append(Pair(claim.claim, text, url, 1, POSITIVE, str(claim.id)))
+            # Rank the cited page's own passages against the claim rather than taking
+            # the first few. The top of a page is masthead, navigation and byline; the
+            # part that actually addresses the claim is somewhere in the middle. Taking
+            # position 0-2 paired boilerplate-as-relevant against BM25-selected
+            # on-topic text-as-irrelevant, which teaches the inverse of the real task.
+            page = by_url[url]
+            index = BM25Index((pid, text) for pid, text in page)
+            ranked = index.search(claim.claim, k=max_positives)
+            chosen = [pid for pid, _ in ranked] or [pid for pid, _ in page[:max_positives]]
+            texts = dict(page)
+            for pid in chosen[:max_positives]:
+                pairs.append(Pair(claim.claim, texts[pid], url, 1, POSITIVE, str(claim.id)))
                 stats[POSITIVE] += 1
 
         # Hard negatives: top BM25 hits that no annotator cited.

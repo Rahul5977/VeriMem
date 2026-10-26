@@ -225,3 +225,29 @@ def test_cli_writes_both_files(tmp_path):
     assert (out / "relevance_dev.jsonl").exists()
     rows = [json.loads(x) for x in (out / "relevance_train.jsonl").read_text().splitlines()]
     assert {"claim", "passage", "url", "label", "kind", "claim_id", "split"} == set(rows[0])
+
+
+def test_positives_are_the_on_topic_part_of_the_cited_page(tmp_path):
+    """Not the first passages, which are masthead and navigation.
+
+    Hard negatives are BM25-selected for topical overlap. If positives are taken by
+    position instead, the data pairs boilerplate-as-relevant against on-topic-text-as-
+    irrelevant and teaches the inverse of the task.
+    """
+    path = pool_file(
+        tmp_path,
+        [
+            {
+                "url": GOLD,
+                "url2text": (
+                    ["Home Menu Subscribe Sign in Newsletter Contact us advertisement."] * 4
+                    + ["The Kochi metro opened to the public in June 2017 after delays."] * 4
+                ),
+            }
+        ],
+    )
+    store = PooledKnowledgeStore(path)
+    pairs, _ = build_pairs([claim_with_gold()], store, max_positives=1, hard_per_claim=0)
+    positive = next(p for p in pairs if p.kind == POSITIVE)
+    assert "metro opened" in positive.passage, positive.passage
+    assert "Subscribe" not in positive.passage
