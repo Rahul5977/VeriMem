@@ -1,0 +1,38 @@
+{
+  "train_runtime": 19.1817,
+  "train_samples_per_second": 10.427,
+  "train_steps_per_second": 0.365,
+  "total_flos": 116900919263232.0,
+  "train_loss": 2.012343406677246,
+  "epoch": 1.0,
+  "dev": {
+    "accuracy": 0.53,
+    "auc": 0.536,
+    "mean_score_positive": 0.5272,
+    "mean_score_negative": 0.5045,
+    "n": 751
+  },
+  "data": {
+    "train": {
+      "n": 200,
+      "positive": 114,
+      "negative": 86,
+      "by_kind": {
+        "positive": 114,
+        "hard_negative": 64,
+        "easy_negative": 22
+      }
+    },
+    "dev": {
+      "n": 751,
+      "positive": 399,
+      "negative": 352,
+      "by_kind": {
+        "positive": 399,
+        "hard_negative": 260,
+        "easy_negative": 92
+      }
+    }
+  },
+  "base_model": "google/flan-t5-base"
+}
