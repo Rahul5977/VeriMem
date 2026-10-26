@@ -40,6 +40,33 @@ from retrieval.store import PooledKnowledgeStore
 
 POSITIVE, HARD_NEGATIVE, EASY_NEGATIVE = "positive", "hard_negative", "easy_negative"
 
+# Extraction keeps some page chrome, and a passage that is mostly cookie banner with a
+# headline glued on scores above zero against the claim while teaching nothing. It is
+# only ~1% of the pool, but it concentrates in positives (2.2%), because a cited page
+# whose body failed to extract still has to contribute its best passage.
+CHROME_MARKERS = (
+    "privacy policy",
+    "copyright",
+    "contact us",
+    "all rights reserved",
+    "terms of service",
+    "subscribe",
+    "advertise",
+    "cookie",
+    "sign in",
+    "newsletter",
+    "follow us",
+    "share this",
+    "skip to",
+    "log in",
+    "menu",
+)
+
+
+def is_chrome(passage: str, threshold: int = 3) -> bool:
+    low = passage.lower()
+    return sum(1 for marker in CHROME_MARKERS if marker in low) >= threshold
+
 
 @dataclass
 class Pair:
@@ -86,6 +113,7 @@ def build_pairs(
     stats = {
         "claims": 0,
         "claims_without_gold_in_pool": 0,
+        "pages_without_usable_text": 0,
         POSITIVE: 0,
         HARD_NEGATIVE: 0,
         EASY_NEGATIVE: 0,
@@ -98,7 +126,7 @@ def build_pairs(
             # The annotated pages failed to fetch; nothing to call relevant.
             stats["claims_without_gold_in_pool"] += 1
             continue
-        stats["claims"] += 1
+        before = stats[POSITIVE]
 
         for url in present:
             # Rank the cited page's own passages against the claim rather than taking
@@ -109,11 +137,27 @@ def build_pairs(
             page = by_url[url]
             index = BM25Index((pid, text) for pid, text in page)
             ranked = index.search(claim.claim, k=max_positives)
-            chosen = [pid for pid, _ in ranked] or [pid for pid, _ in page[:max_positives]]
+            if not ranked:
+                # Nothing on the cited page shares even one content word with the claim.
+                # In practice that means extraction returned only chrome -- cookie
+                # banners, nav bars, a YouTube footer -- so we cannot honestly call any
+                # of it relevant. Falling back to the first passages would relabel that
+                # boilerplate as a positive, which is how the inverse signal got in.
+                stats["pages_without_usable_text"] += 1
+                continue
             texts = dict(page)
-            for pid in chosen[:max_positives]:
+            usable = [pid for pid, _ in ranked if not is_chrome(texts[pid])]
+            if not usable:
+                stats["pages_without_usable_text"] += 1
+                continue
+            for pid in usable[:max_positives]:
                 pairs.append(Pair(claim.claim, texts[pid], url, 1, POSITIVE, str(claim.id)))
                 stats[POSITIVE] += 1
+
+        if stats[POSITIVE] == before:
+            stats["claims_without_gold_in_pool"] += 1
+            continue  # no usable positive, so its negatives would be unpaired
+        stats["claims"] += 1
 
         # Hard negatives: top BM25 hits that no annotator cited.
         taken = 0

@@ -251,3 +251,50 @@ def test_positives_are_the_on_topic_part_of_the_cited_page(tmp_path):
     positive = next(p for p in pairs if p.kind == POSITIVE)
     assert "metro opened" in positive.passage, positive.passage
     assert "Subscribe" not in positive.passage
+
+
+def test_a_page_of_pure_boilerplate_yields_no_positive(tmp_path):
+    """Extraction sometimes returns only chrome. Calling that relevant is the bug
+    that put YouTube footers in the training set labelled 'yes'."""
+    path = pool_file(
+        tmp_path,
+        [{"url": GOLD, "url2text": ["About Press Copyright Contact us Advertise Developers."] * 4}],
+    )
+    store = PooledKnowledgeStore(path)
+    pairs, stats = build_pairs([claim_with_gold()], store)
+    assert not [p for p in pairs if p.kind == POSITIVE]
+    assert stats["pages_without_usable_text"] == 1
+
+
+def test_a_page_with_real_content_still_yields_positives(tmp_path):
+    store = PooledKnowledgeStore(make_pool(tmp_path))
+    pairs, stats = build_pairs([claim_with_gold()], store)
+    assert [p for p in pairs if p.kind == POSITIVE]
+    assert stats["pages_without_usable_text"] == 0
+
+
+def test_chrome_detection():
+    from evaluator.build_data import is_chrome
+
+    assert is_chrome("Privacy Policy Contact us Subscribe to our newsletter today")
+    assert not is_chrome("The Kochi metro opened to the public in June 2017 after delays.")
+
+
+def test_a_headline_glued_to_a_cookie_banner_is_not_a_positive(tmp_path):
+    """Scoring above zero is not enough: chrome plus a title still teaches nothing."""
+    path = pool_file(
+        tmp_path,
+        [
+            {
+                "url": GOLD,
+                "url2text": [
+                    "Privacy Policy Contact us Subscribe Advertise Terms of service "
+                    "cookie settings. Kochi metro opened."
+                ]
+                * 4,
+            }
+        ],
+    )
+    pairs, stats = build_pairs([claim_with_gold()], PooledKnowledgeStore(path))
+    assert not [p for p in pairs if p.kind == POSITIVE]
+    assert stats["pages_without_usable_text"] == 1
