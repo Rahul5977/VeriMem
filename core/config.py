@@ -22,8 +22,10 @@ class RunConfig:
     verifier: Verifier = "prompted"
 
     # --- CRAG ---
-    crag_upper_threshold: float = 0.6  # above -> Correct (refine)
-    crag_lower_threshold: float = -0.6  # below -> Incorrect (rewrite + web search)
+    # Tuned on 150 dev claims, 2026-10-27 (P1.7). At these values routing beats the
+    # best fixed branch by 0.044 macro-F1; the guessed +-0.6 beat it by 0.004.
+    crag_upper_threshold: float = 0.75  # above -> Correct (refine)
+    crag_lower_threshold: float = 0.0  # below -> Incorrect (decompose + search deeper)
     top_k_evidence: int = 5
     top_k_strips: int = 5
     # The rewrite branch exists to reach evidence the first pass missed. Against a fixed
