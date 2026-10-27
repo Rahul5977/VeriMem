@@ -118,3 +118,70 @@ def majority_baseline(gold: Sequence[str]) -> Metrics:
         return Metrics()
     most_common = max(set(gold), key=list(gold).count)
     return score(gold, [most_common] * len(gold))
+
+
+@dataclass
+class AttackResult:
+    """How well a poisoning attack worked, and how much it cost the system overall."""
+
+    n_targets: int = 0
+    n_succeeded: int = 0
+    n_degraded: int = 0
+    clean_macro_f1: float | None = None
+    poisoned_macro_f1: float | None = None
+
+    @property
+    def attack_success_rate(self) -> float:
+        """Fraction of targets where the system returned the adversary's chosen verdict."""
+        return self.n_succeeded / self.n_targets if self.n_targets else 0.0
+
+    @property
+    def collateral(self) -> float | None:
+        """Macro-F1 lost across all claims, not just the targets.
+
+        A quiet attack that flips its targets and leaves everything else intact is more
+        dangerous than a loud one that wrecks the system, because nobody notices it.
+        Reporting only attack success would make the quiet attack look identical to the
+        loud one.
+        """
+        if self.clean_macro_f1 is None or self.poisoned_macro_f1 is None:
+            return None
+        return round(self.clean_macro_f1 - self.poisoned_macro_f1, 4)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "n_targets": self.n_targets,
+            "n_succeeded": self.n_succeeded,
+            "attack_success_rate": round(self.attack_success_rate, 4),
+            "n_degraded": self.n_degraded,
+            "clean_macro_f1": self.clean_macro_f1,
+            "poisoned_macro_f1": self.poisoned_macro_f1,
+            "collateral_macro_f1": self.collateral,
+        }
+
+
+def attack_success(
+    verdicts: dict[str, str],
+    targets: Sequence[Any],
+    clean_verdicts: dict[str, str] | None = None,
+) -> AttackResult:
+    """Score a poisoning run.
+
+    `verdicts` and `clean_verdicts` map claim id -> verdict, under attack and without.
+    A target *succeeds* when the system returns the adversary's chosen verdict. It is
+    *degraded* when the attack merely broke a previously correct answer without
+    achieving the intended one -- harm, but not control, and worth separating because
+    H2 predicts defences should cut success faster than they cut degradation.
+    """
+    result = AttackResult(n_targets=len(targets))
+    for t in targets:
+        got = verdicts.get(str(t.claim_id))
+        if got is None:
+            continue
+        if got == t.target_verdict:
+            result.n_succeeded += 1
+        elif clean_verdicts is not None:
+            was = clean_verdicts.get(str(t.claim_id))
+            if was == t.gold_label and got != t.gold_label:
+                result.n_degraded += 1
+    return result
