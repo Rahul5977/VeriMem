@@ -257,3 +257,68 @@ def test_scorer_cache_only_computes_the_missing_ones(tmp_path):
     s.score("a claim", ["one"])
     s.score("a claim", ["one", "two"])
     assert calls == [1, 1]
+
+
+# --- decomposition on the rewrite branch --------------------------------------------
+
+
+def test_decompose_splits_into_sub_questions(tmp_path):
+    from agent.crag import decompose_claim
+
+    llm = make_llm(
+        tmp_path,
+        reply=(
+            "When did the Kochi metro open?\n"
+            "How much did the Kochi metro cost?\n"
+            "Who operates the Kochi metro?"
+        ),
+    )
+    qs = decompose_claim(claim().claim, llm)
+    assert len(qs) == 3
+    assert qs[0].startswith("When did")
+
+
+def test_decompose_strips_numbering_and_bullets(tmp_path):
+    from agent.crag import decompose_claim
+
+    llm = make_llm(tmp_path, reply="1. When did it open?\n- How much did it cost?\n* Who runs it?")
+    qs = decompose_claim(claim().claim, llm)
+    assert all(not q[0].isdigit() and q[0] not in "-*" for q in qs)
+
+
+def test_decompose_respects_n(tmp_path):
+    from agent.crag import decompose_claim
+
+    llm = make_llm(tmp_path, reply="\n".join(f"Question number {i} about this?" for i in range(9)))
+    assert len(decompose_claim(claim().claim, llm, n=2)) == 2
+
+
+def test_decompose_falls_back_to_the_claim(tmp_path):
+    from agent.crag import decompose_claim
+
+    llm = make_llm(tmp_path, reply="  \n  \n")
+    assert decompose_claim(claim().claim, llm) == [claim().claim]
+
+
+def test_rewrite_branch_excludes_what_the_first_pass_already_had(tmp_path):
+    """The branch exists to reach new evidence. Re-returning the same passages is the
+    reshuffle that made it worthless."""
+    llm = make_llm(tmp_path, reply="When did the metro open?\nHow much did it cost?")
+    cfg = RunConfig(crag_upper_threshold=0.99, crag_lower_threshold=0.5)
+    r = run_crag(claim(), llm, pool(tmp_path, [GOOD, NOISE]), LexicalScorer(), cfg)
+    search = next(s for s in r.steps if s.action == "search")
+    assert "new passages" in search.detail
+
+
+def test_rewrite_branch_retrieves_deeper_than_the_first_pass(tmp_path):
+    from core.config import RunConfig as RC
+
+    assert RC().rewrite_top_k > RC().top_k_evidence
+
+
+def test_rewrite_step_records_every_sub_question(tmp_path):
+    llm = make_llm(tmp_path, reply="When did it open?\nHow much did it cost?")
+    cfg = RunConfig(crag_upper_threshold=0.99, crag_lower_threshold=0.5)
+    r = run_crag(claim(), llm, pool(tmp_path, [NOISE]), LexicalScorer(), cfg)
+    rewrite = next(s for s in r.steps if s.action == "rewrite")
+    assert "|" in rewrite.detail and rewrite.score == 2.0

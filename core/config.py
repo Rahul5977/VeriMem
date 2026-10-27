@@ -26,6 +26,11 @@ class RunConfig:
     crag_lower_threshold: float = -0.6  # below -> Incorrect (rewrite + web search)
     top_k_evidence: int = 5
     top_k_strips: int = 5
+    # The rewrite branch exists to reach evidence the first pass missed. Against a fixed
+    # corpus a reworded query mostly reshuffles the same documents, so it decomposes the
+    # claim into sub-questions and retrieves deeper.
+    rewrite_top_k: int = 20
+    n_subquestions: int = 3
 
     # --- experience store ---
     k_trajectories: int = 3

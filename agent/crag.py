@@ -42,6 +42,12 @@ REWRITE_SYSTEM = (
     "Reply with the query only: no quotes, no explanation, no more than 12 words."
 )
 
+DECOMPOSE_SYSTEM = (
+    "Break the claim into 2-3 short, independent search questions whose answers would "
+    "together settle whether it is true.\n"
+    "One question per line. No numbering, no bullets, no explanation."
+)
+
 
 @dataclass
 class CragResult:
@@ -84,6 +90,26 @@ def rewrite_query(claim: str, llm: LLMClient, max_tokens: int = 40) -> str:
     return query[:200] or claim
 
 
+def decompose_claim(claim: str, llm: LLMClient, n: int = 3, max_tokens: int = 80) -> list[str]:
+    """Sub-questions whose answers would settle the claim.
+
+    A reworded claim retrieves nearly the same documents as the claim did, which is why
+    the rewrite branch was worth so little: it reshuffled rather than reached. Separate
+    sub-questions have different content words, so they pull different documents out of
+    the same corpus.
+
+    This also mirrors how AVeriTeC was annotated -- each claim comes with the questions a
+    fact-checker asked -- so it reproduces the structure of the task rather than guessing.
+    """
+    reply = llm.complete(f"Claim: {claim}", system=DECOMPOSE_SYSTEM, max_tokens=max_tokens)
+    out = []
+    for line in (reply.text or "").splitlines():
+        line = line.strip().lstrip("-*0123456789.) ").strip()
+        if len(line) > 8:
+            out.append(line[:200])
+    return out[:n] or [claim]
+
+
 def run_crag(
     claim: Claim,
     llm: LLMClient,
@@ -117,11 +143,24 @@ def run_crag(
         steps.append(Step("refine", f"{len(strips)} strips kept"))
 
     if action in ("incorrect", "ambiguous"):
-        rewritten = rewrite_query(claim.claim, llm)
-        steps.append(Step("rewrite", rewritten))
-        extra = source.retrieve(str(claim.id), rewritten, k=cfg.top_k_evidence)
-        # Rule 5: this is the knowledge store, not the live web.
-        steps.append(Step("search", f"knowledge store, {len(extra)} hits"))
+        queries = decompose_claim(claim.claim, llm, cfg.n_subquestions)
+        rewritten = " | ".join(queries)
+        steps.append(Step("rewrite", rewritten, score=float(len(queries))))
+
+        # Retrieve per sub-question and deeper than the first pass, so this branch can
+        # surface documents the original query never reached. Rule 5: the knowledge
+        # store, not the live web.
+        per_query = max(1, cfg.rewrite_top_k // len(queries))
+        extra, seen = [], {(e.url, e.text[:80]) for e in evidence}
+        for query in queries:
+            for hit in source.retrieve(str(claim.id), query, k=per_query):
+                key = (hit.url, hit.text[:80])
+                if key not in seen:
+                    seen.add(key)
+                    extra.append(hit)
+        steps.append(
+            Step("search", f"knowledge store, {len(extra)} new passages", score=float(len(extra)))
+        )
         more = refine(claim.claim, extra, scorer, top_k=cfg.top_k_strips)
         seen = {s.text for s in strips}
         strips += [s for s in more if s.text not in seen]
