@@ -20,17 +20,20 @@ import json
 import sys
 from pathlib import Path
 
-from agent.baselines import SYSTEMS
+from agent.baselines import SYSTEMS as BASELINE_SYSTEMS
+from agent.crag import crag
 from core.config import RunConfig
 from core.llm import LLMClient, is_free
 from core.paths import run_dir
 from eval.datasets import label_counts, load_averitec, sample
 from eval.metrics import score
+from evaluator.score import load_scorer
 from experience.format import write_jsonl
 from retrieval.store import GoldEvidenceSource, open_store
 
 # Measured from the prompts in agent/baselines.py; used only for the pre-run estimate.
-AVG_INPUT_TOKENS = {"no_retrieval": 120, "plain_rag": 1400}
+SYSTEMS = (*BASELINE_SYSTEMS, "crag")
+AVG_INPUT_TOKENS = {"no_retrieval": 120, "plain_rag": 1400, "crag": 1200}
 AVG_OUTPUT_TOKENS = 90
 # Measured on an 8 GB Mac running qwen2.5:7b through Ollama, Oct 2026.
 SECONDS_PER_CALL = 18
@@ -40,7 +43,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m eval.run_baselines")
     p.add_argument("--data", type=Path, required=True, help="AVeriTeC split (.json or .jsonl)")
     p.add_argument("--store", type=Path, default=None, help="knowledge store dir or jsonl")
-    p.add_argument("--system", choices=[*SYSTEMS, "both"], default="both")
+    p.add_argument(
+        "--system",
+        choices=[*SYSTEMS, "both", "all"],
+        default="both",
+        help="'both' is the two baselines; 'all' adds crag",
+    )
+    p.add_argument(
+        "--evaluator",
+        type=Path,
+        default=None,
+        help="trained evaluator dir; required for --system crag/all",
+    )
     p.add_argument(
         "--evidence",
         choices=["store", "gold"],
@@ -59,15 +73,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def run_one(system: str, claims, llm, source, args) -> tuple[list, dict]:
-    fn = SYSTEMS[system]
+def run_one(system: str, claims, llm, source, args, scorer=None, cfg=None) -> tuple[list, dict]:
     trajectories = []
     for i, claim in enumerate(claims, start=1):
         try:
-            if system == "plain_rag":
-                trajectories.append(fn(claim, llm, source, k=args.k))
+            if system == "crag":
+                trajectories.append(crag(claim, llm, source, scorer, cfg))
+            elif system == "plain_rag":
+                trajectories.append(BASELINE_SYSTEMS[system](claim, llm, source, k=args.k))
             else:
-                trajectories.append(fn(claim, llm))
+                trajectories.append(BASELINE_SYSTEMS[system](claim, llm))
         except Exception as exc:  # noqa: BLE001 - any endpoint failure lands here
             if "Connection" not in type(exc).__name__ and "Connection" not in str(exc):
                 raise
@@ -101,10 +116,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[verimem] {len(claims)} of {len(every)} claims from {args.data} ({scope})")
     print(f"[verimem] gold labels: {label_counts(claims)}")
 
-    systems = list(SYSTEMS) if args.system == "both" else [args.system]
+    if args.system == "all":
+        systems = list(SYSTEMS)
+    elif args.system == "both":
+        systems = list(BASELINE_SYSTEMS)
+    else:
+        systems = [args.system]
+
+    scorer = None
+    if "crag" in systems:
+        if args.evaluator is None:
+            raise SystemExit(
+                "--evaluator is required for crag. Without it the pipeline would score "
+                "passages with a lexical stub, and the CRAG row would measure word "
+                "counting rather than the trained evaluator."
+            )
+        scorer = load_scorer(args.evaluator)
 
     source = None
-    if "plain_rag" in systems:
+    if {"plain_rag", "crag"} & set(systems):
         if args.evidence == "gold":
             print("[verimem] WARNING: --evidence gold is an ORACLE upper bound, not a baseline")
             source = GoldEvidenceSource(claims)
@@ -157,13 +187,18 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = RunConfig(split=args.split, limit=args.limit, seed=args.seed, top_k_evidence=args.k)
     cfg.api_model, cfg.api_base_url = llm.model, llm.base_url
+    if "crag" in systems:
+        print(
+            f"[verimem] crag thresholds: upper={cfg.crag_upper_threshold} "
+            f"lower={cfg.crag_lower_threshold}"
+        )
 
     out = run_dir(args.name or f"{args.system}-{args.split}")
     cfg.save(out)
     all_metrics = {}
     for system in systems:
         print(f"\n[verimem] === {system} ===")
-        trajectories, metrics = run_one(system, claims, llm, source, args)
+        trajectories, metrics = run_one(system, claims, llm, source, args, scorer, cfg)
         all_metrics[system] = metrics
         write_jsonl(trajectories, out / f"{system}_trajectories.jsonl")
         print(metrics["summary"])

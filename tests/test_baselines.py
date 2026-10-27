@@ -316,3 +316,40 @@ def test_majority_baseline_on_empty_input():
     from eval.metrics import majority_baseline
 
     assert majority_baseline([]).n == 0
+
+
+# --- crag as a third system ---------------------------------------------------------
+
+
+def test_crag_requires_a_trained_evaluator(tmp_path, monkeypatch):
+    """Without one it would score with a lexical stub, and the CRAG row would
+    measure word counting rather than the evaluator."""
+    monkeypatch.setenv("VERIMEM_API_BASE_URL", OLLAMA)
+    monkeypatch.setenv("VERIMEM_API_MODEL", "qwen2.5:7b")
+    with pytest.raises(SystemExit, match="--evaluator is required"):
+        run_main(
+            [
+                "--data",
+                str(CLAIMS_FILE),
+                "--store",
+                str(STORE_FILE),
+                "--system",
+                "crag",
+                "--limit",
+                "2",
+            ]
+        )
+
+
+def test_all_includes_three_systems():
+    from eval.run_baselines import SYSTEMS
+
+    assert set(SYSTEMS) == {"no_retrieval", "plain_rag", "crag"}
+
+
+def test_both_still_means_the_two_baselines(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("VERIMEM_API_BASE_URL", OLLAMA)
+    monkeypatch.setenv("VERIMEM_API_MODEL", "qwen2.5:7b")
+    monkeypatch.setenv("VERIMEM_RESULTS_DIR", str(tmp_path))
+    run_main(["--data", str(CLAIMS_FILE), "--store", str(STORE_FILE), "--limit", "3", "--dry-run"])
+    assert "crag thresholds" not in capsys.readouterr().out
