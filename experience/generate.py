@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             if "Connection" not in type(exc).__name__ and "Connection" not in str(exc):
                 raise
             raise SystemExit(
-                f"\nThe endpoint stopped responding at claim {i}/{len(claims)}.\\n"
+                f"\nThe endpoint stopped responding at claim {i}/{len(claims)}.\n"
                 f"  {i - 1} trajectories are cached and replay instantly.\n"
                 f"  Restart the endpoint and run the same command to resume."
             ) from exc
