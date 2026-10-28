@@ -18,12 +18,9 @@ Four things. Three are small; one she has to download from Kaggle for you.
 | `dev.json` | `data/averitec/` | 1.7 MB |
 | `pool_dev.jsonl` | `data/averitec/` | 8.2 MB |
 | `misinfo_list.txt` | `data/averitec/` | 28 KB |
-| `trajectories.jsonl` | `data/trajectories/` | ~40 MB |
+| `trajectories.jsonl` | `data/trajectories/` | 3.4 MB |
 
-The first three are on her laptop. **`trajectories.jsonl` is only on Kaggle** — she gets
-it from the `verimem-trajectories` kernel's *Output* tab, under
-`data/trajectories/trajectories.jsonl`. The API cannot download it; it has to come from
-the web UI.
+All four are on her laptop, so this is one small zip (about 13 MB total).
 
 You do **not** need the trained evaluator. `setup.sh` trains it here in about 25 minutes
 from data that is in the repo, which is faster than transferring a 1 GB model.
@@ -149,21 +146,22 @@ makes any change in B attributable to the poison rather than to retrieval in gen
 
 ## For Teesha: the four files to send
 
-Three are already on your laptop:
+All four are on your laptop:
 
 ```
 data/averitec/dev.json
 data/averitec/pool_dev.jsonl
 data/averitec/misinfo_list.txt
+data/trajectories/trajectories.jsonl
 ```
 
-The fourth has to come off Kaggle, because the API cannot download it:
+```bash
+zip -r verimem-c1-inputs.zip \
+  data/averitec/dev.json data/averitec/pool_dev.jsonl \
+  data/averitec/misinfo_list.txt data/trajectories/trajectories.jsonl
+```
 
-1. open the `verimem-trajectories` kernel
-2. **Output** tab → navigate to `data/trajectories/`
-3. download `trajectories.jsonl`
-
-Zip all four with their directory structure and send it. Nothing else is needed — the
+About 13 MB. Nothing else is needed — the
 evaluator trains on this end from data already in the repo, and `cache/` must not be
 copied (it is gigabytes and the runs rebuild what they need).
 

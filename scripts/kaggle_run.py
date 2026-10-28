@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 import urllib.error
@@ -202,21 +203,61 @@ def harvest(slug: str, owner: str, dest: Path) -> list[Path]:
     return written
 
 
+def list_output(slug: str, owner: str, contains: str = "", limit: int = 0) -> list[dict[str, Any]]:
+    """Every output file of a kernel, paging until the listing is exhausted.
+
+    One page holds 500 entries and a run leaves thousands of hashed cache files, so
+    anything written under `data/` or `results/` is far past the first page. Paging is
+    not optional -- without it the file you want simply appears not to exist, which is
+    what it looked like for a while.
+    """
+    out: list[dict[str, Any]] = []
+    token = ""
+    while True:
+        params = {"userName": owner, "kernelSlug": slug}
+        if token:
+            params["pageToken"] = token
+        page = _call(f"/kernels/output?{urllib.parse.urlencode(params)}")
+        for entry in page.get("files", []):
+            name = entry.get("fileName") or entry.get("fileNameNullable") or ""
+            if contains and contains not in name:
+                continue
+            out.append({"name": name, "url": entry.get("url"), "size": entry.get("totalBytes")})
+            if limit and len(out) >= limit:
+                return out
+        token = page.get("nextPageToken") or ""
+        if not token:
+            return out
+
+
 def fetch(slug: str, owner: str, name: str, dest: Path) -> Path:
-    """Download one output file by its path inside /kaggle/working."""
-    q = urllib.parse.urlencode({"userName": owner, "kernelSlug": slug, "fileName": name})
-    url = f"{API}/kernels/output/download?{q}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {_token()}"})
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with urllib.request.urlopen(req, timeout=600) as r, dest.open("wb") as fh:
-            fh.write(r.read())
-    except urllib.error.HTTPError as exc:
+    """Download one output file by its path inside /kaggle/working.
+
+    The file's bytes come from a **signed URL carried in the listing**, not from an API
+    download endpoint -- there is no such endpoint, and calling one returns 404 for every
+    path including files that certainly exist. So the listing is paged until the name
+    matches, then its `url` is fetched directly.
+    """
+    matches = [f for f in list_output(slug, owner, contains=name) if f["name"] == name]
+    if not matches:
+        near = [f["name"] for f in list_output(slug, owner, contains=Path(name).name, limit=10)]
         raise SystemExit(
-            f"Kaggle API {exc.code} fetching {name!r}. The path must be exactly as it "
-            "appears under /kaggle/working. Results also print to the log -- try `log`."
-        ) from exc
-    print(f"[kaggle] {name} -> {dest} ({dest.stat().st_size} bytes)")
+            f"{name!r} is not in {owner}/{slug}'s output.\n"
+            + (
+                "Files with that basename:\n  " + "\n  ".join(near)
+                if near
+                else "Nothing with that basename either. Try `files` to list them."
+            )
+        )
+    url = matches[0]["url"]
+    if not url:
+        raise SystemExit(f"{name!r} is listed but carries no download URL")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # The signed URL is pre-authenticated; sending the bearer token too is refused.
+    with urllib.request.urlopen(url, timeout=900) as r, dest.open("wb") as fh:
+        shutil.copyfileobj(r, fh)
+    print(f"[kaggle] {name} -> {dest} ({dest.stat().st_size / 1e6:.1f} MB)")
     return dest
 
 
@@ -257,6 +298,11 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("slug")
     sp.add_argument("--out", type=Path, default=Path("results"))
 
+    sp = sub.add_parser("files", help="list a kernel's output files (pages the listing)")
+    sp.add_argument("slug")
+    sp.add_argument("--contains", default="", help="only names containing this")
+    sp.add_argument("--limit", type=int, default=0)
+
     sp = sub.add_parser("fetch", help="download one output file by path")
     sp.add_argument("slug")
     sp.add_argument("name")
@@ -287,6 +333,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if st == "complete" else 1
     if args.cmd == "log":
         print(log(args.slug, args.owner, args.grep, args.tail))
+        return 0
+    if args.cmd == "files":
+        rows = list_output(args.slug, args.owner, args.contains, args.limit)
+        for f in rows:
+            size = f"{f['size'] / 1e6:8.1f} MB" if f.get("size") else "         ?"
+            print(f"  {size}  {f['name']}")
+        print(f"[kaggle] {len(rows)} file(s)")
         return 0
     if args.cmd == "harvest":
         return 0 if harvest(args.slug, args.owner, args.out) else 1
