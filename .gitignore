@@ -60,3 +60,7 @@ service-account*.json
 
 # --- Local tool state ---
 .claude/settings.local.json
+
+# Input bundles for GPU-laptop handoffs: data, not code
+verimem-*-inputs.zip
+verimem-*-results.zip
