@@ -1,0 +1,7 @@
+{
+  "_comment": "Flags-off macro-F1 per system, recorded from a real run. Rule 4 says a run with every Phase 2-3 flag off must still produce these. Fill `systems` from a g1-rerun results folder; an empty object makes the numeric test skip rather than pass. When a number legitimately changes, re-record it AND log the reason in PROGRESS.md -> Decisions, because an unexplained edit here silently retires the baseline.",
+  "_recorded_from": "pending: verimem-g1rerun-g2, launched 2026-10-28",
+  "_prompt_sha": "9c463ee58e8f",
+  "tolerance": 0.005,
+  "systems": {}
+}

@@ -68,7 +68,10 @@ class CragResult:
     steps: list[Step] = field(default_factory=list)
     parsed: bool = True
     n_memory: int = 0
-    trust_stats: dict[str, Any] = field(default_factory=dict)
+    # None when trust filtering did not run. An all-zeros dict would be truthy, which
+    # put a `trust` key into every flags-off trajectory's metadata -- a rule 4 violation,
+    # because a Phase 1 record and a flags-off Phase 3 record then differ.
+    trust_stats: dict[str, Any] | None = None
     # Which past verifications reached the prompt. The project's stated output is a
     # verdict *plus the past verifications it drew on*, so this is part of the answer,
     # not instrumentation -- and the propagation study needs it to tell a real channel
@@ -213,12 +216,14 @@ def run_crag(
     # C3 on the evidence path. This is the only defence source poisoning can be met
     # with: a fabricated page is written about the claim and *is* relevant, so the
     # evaluator scores it high and C2 has nothing to object to. See refine.filter_by_trust.
-    trust_stats = TrustFilterStats()
+    trust_stats: dict[str, Any] | None = None
     if trust is not None and cfg.source_trust:
+        collected = TrustFilterStats()
         before = len(strips)
         strips = filter_by_trust(
-            strips, trust, floor=cfg.trust_floor, fake_urls=fake_urls, stats=trust_stats
+            strips, trust, floor=cfg.trust_floor, fake_urls=fake_urls, stats=collected
         )
+        trust_stats = collected.as_dict()
         steps.append(
             Step(
                 "trust",
@@ -249,7 +254,7 @@ def run_crag(
         steps=steps,
         parsed=parsed.parsed,
         n_memory=n_memory,
-        trust_stats=trust_stats.as_dict(),
+        trust_stats=trust_stats,
         retrieved_ids=retrieved_ids,
     )
 
