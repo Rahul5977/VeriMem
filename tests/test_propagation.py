@@ -229,3 +229,49 @@ def test_the_outcome_serialises_its_own_verdict() -> None:
     assert set(d["verdicts"]) == set(CONDITIONS)
     assert isinstance(d["propagated"], bool)
     assert isinstance(d["collateral"], bool)
+
+
+# --- duplicates are not neighbours ----------------------------------------------------
+
+
+def test_an_identical_claim_is_not_a_propagation_neighbour() -> None:
+    """AVeriTeC dev really contains this: claims 192 and 208 are byte-identical under
+    different ids. A verdict reaching its own restatement has propagated nowhere."""
+    claims = [
+        CLAIMS[0],
+        Claim(id="dup", claim=CLAIMS[0].claim, gold_label="Supported"),
+        CLAIMS[1],
+    ]
+    pairs = choose_pairs(claims, TARGETS, min_similarity=0.0, per_target=1)
+    assert all(p.neighbour_id != "dup" for p in pairs)
+    assert [p.neighbour_id for p in pairs] == ["b1"], "it falls through to a real neighbour"
+
+
+def test_a_claim_differing_only_in_punctuation_is_still_a_duplicate() -> None:
+    """Claims 194 and 224 differ by one trailing full stop."""
+    claims = [
+        CLAIMS[0],
+        Claim(id="dup", claim=CLAIMS[0].claim.rstrip(".") + "  ", gold_label="Supported"),
+        CLAIMS[1],
+    ]
+    pairs = choose_pairs(claims, TARGETS, min_similarity=0.0, per_target=1)
+    assert all(p.neighbour_id != "dup" for p in pairs)
+
+
+def test_a_near_restatement_is_excluded_by_the_similarity_ceiling() -> None:
+    """Not textually identical, but close enough that it is the same assertion."""
+    near = Claim(
+        id="near",
+        claim="The Kochi metro opened to the public in 2017",  # no full stop, same words
+        gold_label="Supported",
+    )
+    pairs = choose_pairs([CLAIMS[0], near, CLAIMS[1]], TARGETS, min_similarity=0.0, per_target=2)
+    assert all(p.similarity <= 0.9 for p in pairs)
+    assert all(p.neighbour_id != "near" for p in pairs)
+
+
+def test_a_genuine_neighbour_survives_the_ceiling() -> None:
+    """The guard must not throw away the pairs the experiment is made of."""
+    pairs = choose_pairs(CLAIMS, TARGETS, min_similarity=0.1, per_target=1)
+    assert [p.neighbour_id for p in pairs] == ["b1"]
+    assert 0.1 <= pairs[0].similarity <= 0.9

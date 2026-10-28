@@ -52,6 +52,13 @@ from eval.datasets import Claim
 from experience.format import Trajectory
 from retrieval.bm25 import BM25Index
 
+# A neighbour this close to the target is a restatement of it, not a different claim.
+# AVeriTeC dev genuinely contains duplicates under separate ids -- claims 192 and 208 are
+# byte-identical, 194 and 224 differ by a trailing full stop -- and pairing a claim with
+# its own duplicate would count a transferred verdict as propagation when nothing
+# propagated anywhere.
+MAX_SIMILARITY = 0.9
+
 
 @dataclass
 class Pair:
@@ -68,11 +75,17 @@ class Pair:
         return asdict(self)
 
 
+def _normalise(claim: str) -> str:
+    """For duplicate detection: case, spacing and trailing punctuation are not content."""
+    return " ".join(claim.lower().split()).rstrip(".!?,;: ")
+
+
 def choose_pairs(
     claims: Sequence[Claim],
     targets: Sequence[Target],
     min_similarity: float = 0.15,
     per_target: int = 1,
+    max_similarity: float = MAX_SIMILARITY,
 ) -> list[Pair]:
     """Pair each target with the nearest *different* claim that could retrieve it.
 
@@ -89,6 +102,11 @@ def choose_pairs(
 
     A neighbour must be labelled: an unlabelled claim can show a verdict *change* but not
     a change against ground truth, and those are not the same finding.
+
+    **Duplicates are excluded at both ends.** The dataset contains the same claim under
+    different ids, and a duplicate is not a neighbour -- a verdict reaching its own
+    restatement has not propagated to anything. Exact matches are caught by normalised
+    text, and anything above `max_similarity` is caught as a near-restatement.
     """
     by_id = {str(c.id): c for c in claims}
     labelled = [c for c in claims if c.gold_label]
@@ -107,6 +125,7 @@ def choose_pairs(
         if self_score <= 0:
             continue
 
+        target_text = _normalise(target.claim)
         taken = 0
         for cid, score in hits:
             if taken >= per_target:
@@ -118,6 +137,8 @@ def choose_pairs(
             if relative < min_similarity:
                 break  # hits are ranked, so nothing further can qualify
             neighbour = by_id[cid]
+            if relative > max_similarity or _normalise(neighbour.claim) == target_text:
+                continue  # a restatement of the target, not a neighbour of it
             pairs.append(
                 Pair(
                     target_id=target.claim_id,
