@@ -82,23 +82,42 @@ def _call(path: str, payload: dict[str, Any] | None = None, timeout: int = 300) 
         raise SystemExit(f"Kaggle API {exc.code} on {path}\n{body}") from exc
 
 
-def push(notebook: Path, slug: str, owner: str, datasets: list[str], enable_gpu: bool) -> str:
-    """Upload a notebook and start it. Returns the kernel's full slug."""
+def push(
+    notebook: Path,
+    slug: str,
+    owner: str,
+    datasets: list[str],
+    kernels: list[str],
+    enable_gpu: bool,
+) -> str:
+    """Upload a notebook and start it. Returns the kernel's full slug.
+
+    Field names are the API's own (`slug` for owner/name, camelCase keys). Sending
+    Kaggle's *metadata-file* spelling instead -- `id`, `kernel_type`, `enable_gpu` --
+    is rejected with "Could not convert string to integer", because `id` there means
+    the numeric kernel ref.
+
+    `kernels` attaches other kernels' **outputs** as inputs. That is how the trajectory
+    store and the warm cache reach a run: they are produced by an earlier kernel, not
+    uploaded as a dataset.
+    """
     nb = json.loads(notebook.read_text(encoding="utf-8"))
-    meta = {
-        "id": f"{owner}/{slug}",
-        "title": slug,
-        "code_file": notebook.name,
+    body = {
+        "slug": f"{owner}/{slug}",
+        "newTitle": slug,
+        "text": json.dumps(nb),
         "language": "python",
-        "kernel_type": "notebook",
-        "is_private": True,
-        "enable_gpu": enable_gpu,
-        "enable_internet": True,
-        "dataset_sources": datasets,
-        "competition_sources": [],
-        "kernel_sources": [],
+        "kernelType": "notebook",
+        "isPrivate": True,
+        "enableGpu": enable_gpu,
+        "enableTpu": False,
+        "enableInternet": True,
+        "datasetDataSources": datasets,
+        "competitionDataSources": [],
+        "kernelDataSources": kernels,
+        "modelDataSources": [],
+        "categoryIds": [],
     }
-    body = {**meta, "text": json.dumps(nb)}
     out = _call("/kernels/push", body)
     if out.get("error"):
         raise SystemExit(f"push rejected: {out['error']}")
@@ -171,6 +190,13 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("notebook", type=Path)
     sp.add_argument("--slug", required=True)
     sp.add_argument("--dataset", action="append", default=[], help="repeatable owner/name")
+    sp.add_argument(
+        "--kernel-source",
+        action="append",
+        default=[],
+        help="repeatable owner/kernel whose OUTPUT is attached as an input; this is how "
+        "trajectories and a warm cache reach a run",
+    )
     sp.add_argument("--no-gpu", dest="gpu", action="store_false")
     sp.add_argument(
         "--wait", action="store_true", help="block until it finishes, then print the log"
@@ -196,7 +222,14 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     if args.cmd == "push":
-        push(args.notebook, args.slug, args.owner, args.dataset, args.gpu)
+        push(
+            args.notebook,
+            args.slug,
+            args.owner,
+            args.dataset,
+            args.kernel_source,
+            args.gpu,
+        )
         if args.wait:
             st = wait(args.slug, args.owner)
             print(log(args.slug, args.owner, None, 0))
