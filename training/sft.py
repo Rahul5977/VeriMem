@@ -32,13 +32,13 @@ from typing import Any
 
 from core.config import RunConfig
 from core.paths import run_dir
-from experience.format import read_jsonl
+from experience.format import Trajectory, read_jsonl
 from training.data import build_dataset
 
 
 @dataclass
 class TrainArgs:
-    data: Path
+    data: list[Path]
     name: str
     mode: str = "plain"
     model: str | None = None
@@ -57,6 +57,7 @@ class TrainArgs:
     backend: str = "auto"  # auto | unsloth | peft
     load_in_4bit: bool = True
     keep_incorrect: bool = False
+    gold_targets: bool = False
     seed: int = 13
     limit: int | None = None
     resume: bool = False
@@ -79,7 +80,14 @@ def parse_args(argv: list[str] | None = None) -> TrainArgs:
         prog="python -m training.sft",
         description="QLoRA SFT for the VeriMem verifier (GPU only).",
     )
-    p.add_argument("--data", type=Path, required=True, help="trajectories .jsonl")
+    p.add_argument(
+        "--data",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="trajectories .jsonl; several may be given, which is how --gold-targets "
+        "reaches the failures that experience.generate writes to a separate file",
+    )
     p.add_argument("--name", required=True, help="run name; output goes to results/<date>_<name>/")
     p.add_argument("--mode", choices=["plain", "retrieval"], default="plain")
     p.add_argument("--model", default=None, help="base model (default: RunConfig.verifier_model)")
@@ -101,6 +109,12 @@ def parse_args(argv: list[str] | None = None) -> TrainArgs:
     p.add_argument("--no-4bit", dest="load_in_4bit", action="store_false")
     p.add_argument(
         "--keep-incorrect", action="store_true", help="train on failed verifications too"
+    )
+    p.add_argument(
+        "--gold-targets",
+        action="store_true",
+        help="train toward the claim's true label rather than the agent's verdict; "
+        "keeps every labelled trajectory and restores the class distribution",
     )
     p.add_argument("--seed", type=int, default=13)
     p.add_argument("--limit", type=int, default=None, help="cap the number of trajectories")
@@ -138,7 +152,15 @@ def prepare(args: TrainArgs) -> tuple[list[dict[str, Any]], dict[str, Any], RunC
     if args.save_steps:
         cfg.checkpoint_every_steps = args.save_steps
 
-    trajectories = read_jsonl(args.data)
+    # Deduplicate by id: the successes and failures files are disjoint, but passing the
+    # same path twice should not double-weight a trajectory.
+    by_id: dict[str, Trajectory] = {}
+    for path in args.data:
+        for traj in read_jsonl(path):
+            by_id.setdefault(traj.id, traj)
+    trajectories = list(by_id.values())
+    if len(args.data) > 1:
+        print(f"[verimem] {len(trajectories)} trajectories from {len(args.data)} files")
     random.Random(args.seed).shuffle(trajectories)
     if args.limit:
         trajectories = trajectories[: args.limit]
@@ -148,11 +170,14 @@ def prepare(args: TrainArgs) -> tuple[list[dict[str, Any]], dict[str, Any], RunC
         mode=args.mode,
         cfg=cfg,
         keep_incorrect=args.keep_incorrect,
+        use_gold=args.gold_targets,
     )
     if not examples:
         raise SystemExit(
-            f"No trainable examples in {args.data}. All {stats.n_skipped} trajectories were "
-            "incorrect verifications -- pass --keep-incorrect to train on them anyway."
+            f"No trainable examples in {[str(d) for d in args.data]}. All "
+            f"{stats.n_skipped} trajectories were incorrect verifications -- pass "
+            "--gold-targets to train them toward the true label, or --keep-incorrect "
+            "to train on the wrong verdicts as given."
         )
     if stats.max_tokens > cfg.max_seq_length:
         print(
@@ -332,8 +357,10 @@ def _write_notes(
 Mode **{args.mode}** · base `{cfg.verifier_model}` · LoRA r={args.lora_r}, alpha={args.lora_alpha}
 seq<={cfg.max_seq_length} · batch {args.batch_size} x accum {cfg.grad_accum_steps} · seed {args.seed}
 
-- Trajectories: `{args.data}`
+- Trajectories: {" ".join(f"`{d}`" for d in args.data)}
+- Target: {"the claim's gold label" if args.gold_targets else "the verdict the agent reached"}
 - Examples: {stats["n_examples"]} ({stats["n_skipped"]} skipped as incorrect verifications)
+- Verdicts: {stats["verdict_counts"]}
 - With retrieved context: {stats["n_with_retrieval"]} · trimmed to fit: {stats["n_trimmed"]}
 - Mean ~{stats["mean_tokens"]} tokens, max ~{stats["max_tokens"]}
 - Adapter: `{adapter}`

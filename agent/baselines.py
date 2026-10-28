@@ -15,17 +15,14 @@ import re
 from dataclasses import dataclass
 
 from core.llm import LLMClient
+from core.prompts import VERIFIER_SYSTEM
 from eval.datasets import Claim
 from experience.format import VERDICTS, Step, Trajectory
 from retrieval.store import EvidenceSource
 
-SYSTEM = (
-    "You are a fact-checking verifier. Decide whether the evidence supports the claim, "
-    "refutes it, conflicts, or is insufficient.\n"
-    "Answer with exactly one of: Supported, Refuted, Conflicting evidence, "
-    "Not enough evidence.\n"
-    "Reply in this form:\nVerdict: <label>\nReasoning: <one or two sentences>"
-)
+# One definition, shared with training so the fine-tuned verifier is served the
+# prompt it was trained on. See core.prompts.
+SYSTEM = VERIFIER_SYSTEM
 
 SYSTEM_NO_EVIDENCE = (
     "You are a fact-checking verifier. You have no retrieved evidence - judge the claim "

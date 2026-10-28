@@ -23,18 +23,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from core.config import RunConfig
+from core.prompts import VERIFIER_SYSTEM, verifier_user_message
 from experience.format import TokenCounter, Trajectory, estimate_tokens
 from training.neighbors import LexicalRetriever, Retriever
 
 Mode = Literal["plain", "retrieval"]
 
-SYSTEM_PROMPT = (
-    "You are a fact-checking verifier. Given a claim and retrieved evidence, decide "
-    "whether the evidence supports the claim, refutes it, conflicts, or is insufficient.\n"
-    "Answer with exactly one of: Supported, Refuted, Conflicting evidence, "
-    "Not enough evidence.\n"
-    "Reply in this form:\nVerdict: <label>\nReasoning: <one or two sentences>"
-)
+# Re-exported so existing callers and tests keep working.
+SYSTEM_PROMPT = VERIFIER_SYSTEM
 
 # Room left for the model's own answer, so a long prompt never crowds out the target.
 COMPLETION_RESERVE_TOKENS = 220
@@ -77,13 +73,32 @@ class DatasetStats:
         }
 
 
-def _user_message(claim: str, evidence_block: str, context_block: str = "") -> str:
-    parts = []
-    if context_block:
-        parts.append(f"Past verifications that may help:\n\n{context_block}")
-    parts.append(f"Claim: {claim}")
-    parts.append(f"Evidence:\n{evidence_block}")
-    return "\n\n".join(parts)
+def target_verdict(trajectory: Trajectory, use_gold: bool) -> str:
+    """What the model should be taught to answer.
+
+    With `use_gold`, the target is the claim's true label rather than the verdict the
+    agent reached. That matters more than it sounds: keeping only trajectories the agent
+    got right throws away precisely the classes it is worst at, and the result is
+    self-reinforcing. On our run, filtering to correct verdicts left 5 "Conflicting
+    evidence" examples out of 885 -- 0.6% -- so a model trained on it could never learn
+    the class. Training toward the correct answer keeps every trajectory and restores
+    the data's natural distribution.
+
+    The deviation from ExpRAG, which trains on trajectories as the agent produced them,
+    is deliberate and reported.
+    """
+    if use_gold and trajectory.gold_label:
+        return trajectory.gold_label
+    return trajectory.verdict
+
+
+def render_answer_for(trajectory: Trajectory, use_gold: bool) -> str:
+    verdict = target_verdict(trajectory, use_gold)
+    if verdict == trajectory.verdict:
+        return trajectory.render_answer()
+    # The stored rationale argues for the agent's verdict, so it cannot be kept beside
+    # a different one. Better a bare verdict than a contradiction.
+    return f"Verdict: {verdict}"
 
 
 def build_example(
@@ -91,6 +106,7 @@ def build_example(
     retrieved: Sequence[Trajectory] = (),
     cfg: RunConfig | None = None,
     count: TokenCounter = estimate_tokens,
+    use_gold: bool = False,
 ) -> SFTExample:
     """One training example, shrunk until it fits `cfg.max_seq_length`.
 
@@ -99,7 +115,7 @@ def build_example(
     in. The target answer is never truncated.
     """
     cfg = cfg or RunConfig()
-    answer = trajectory.render_answer()
+    answer = render_answer_for(trajectory, use_gold)
     budget = (
         cfg.max_seq_length
         - COMPLETION_RESERVE_TOKENS
@@ -123,7 +139,7 @@ def build_example(
         t.render_for_context(cfg.trajectory_token_cap, count) for t in kept
     )
     evidence_block = trajectory.render_evidence(max(budget - count(context_block), 128), count)
-    user = _user_message(trajectory.claim, evidence_block, context_block)
+    user = verifier_user_message(trajectory.claim, evidence_block, context_block)
 
     est = count(SYSTEM_PROMPT) + count(user) + count(answer) + TEMPLATE_OVERHEAD_TOKENS
     return SFTExample(
@@ -146,6 +162,7 @@ def build_dataset(
     retriever: Retriever | None = None,
     keep_incorrect: bool = False,
     count: TokenCounter = estimate_tokens,
+    use_gold: bool = False,
 ) -> tuple[list[SFTExample], DatasetStats]:
     """Turn trajectories into SFT examples.
 
@@ -161,17 +178,21 @@ def build_dataset(
     examples: list[SFTExample] = []
     stats = DatasetStats()
     for traj in trajectories:
-        if traj.correct is False and not keep_incorrect:
+        # With gold targets every labelled trajectory is usable: a wrong verdict is
+        # still a correct (claim, evidence) pair, and discarding it is what starved the
+        # minority classes.
+        if traj.correct is False and not (keep_incorrect or use_gold and traj.gold_label):
             stats.n_skipped += 1
             continue
         neighbours = retriever(traj, k) if (k and retriever) else []
-        example = build_example(traj, neighbours, cfg, count)
+        example = build_example(traj, neighbours, cfg, count, use_gold=use_gold)
         examples.append(example)
         stats.n_examples += 1
         stats.n_trimmed += int(example.trimmed)
         stats.n_with_retrieval += int(example.n_retrieved > 0)
         stats.max_tokens = max(stats.max_tokens, example.est_tokens)
-        stats.verdict_counts[traj.verdict] = stats.verdict_counts.get(traj.verdict, 0) + 1
+        v = target_verdict(traj, use_gold)
+        stats.verdict_counts[v] = stats.verdict_counts.get(v, 0) + 1
 
     if examples:
         stats.mean_tokens = sum(e.est_tokens for e in examples) / len(examples)

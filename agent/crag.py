@@ -24,7 +24,7 @@ helps retrieval, not whether the open web does.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from agent.baselines import SYSTEM, parse_verdict
 from core.config import RunConfig
@@ -120,6 +120,7 @@ def run_crag(
     cfg: RunConfig | None = None,
     force_action: Action | None = None,
     memory: ExperienceStore | None = None,
+    verifier: Any = None,
 ) -> CragResult:
     """Retrieve, grade, route, refine and/or re-search, then verify.
 
@@ -190,7 +191,11 @@ def run_crag(
     prompt = f"Claim: {claim.claim}\n\nEvidence:\n{block}"
     if experience:
         prompt = f"{experience}\n\n{prompt}"
-    reply = llm.complete(prompt, system=SYSTEM, max_tokens=200)
+    # The teacher rewrites and decomposes; only the final judgement moves to a
+    # fine-tuned student when one is given (C4). Routing the whole pipeline through the
+    # student would ask it for behaviour no training example contained.
+    judge = verifier if verifier is not None else llm
+    reply = judge.complete(prompt, system=SYSTEM, max_tokens=200)
     parsed = parse_verdict(reply.text)
     steps.append(Step("verify", f"verdict from {len(strips)} strips"))
 
@@ -214,9 +219,10 @@ def crag(
     scorer: RelevanceScorer,
     cfg: RunConfig | None = None,
     memory: ExperienceStore | None = None,
+    verifier: Any = None,
 ) -> Trajectory:
     """CRAG as a `Trajectory`, so it stores, trains and evaluates like everything else."""
-    result = run_crag(claim, llm, source, scorer, cfg, memory=memory)
+    result = run_crag(claim, llm, source, scorer, cfg, memory=memory, verifier=verifier)
     return Trajectory(
         claim=claim.claim,
         verdict=result.verdict,
@@ -233,6 +239,7 @@ def crag(
             "parsed": result.parsed,
             "grade": round(result.grade, 4),
             "rewritten_query": result.rewritten_query,
+            "verifier": getattr(verifier, "model", None) or "prompted",
             "n_memory": result.n_memory,
         },
     )

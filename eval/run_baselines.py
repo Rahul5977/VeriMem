@@ -30,6 +30,7 @@ from eval.metrics import score
 from evaluator.score import load_scorer
 from experience.format import write_jsonl
 from retrieval.store import GoldEvidenceSource, open_store
+from training.verifier import load_verifier
 
 # Measured from the prompts in agent/baselines.py; used only for the pre-run estimate.
 SYSTEMS = (*BASELINE_SYSTEMS, "crag")
@@ -63,6 +64,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--split", default="dev")
     p.add_argument(
+        "--verifier-adapter",
+        type=Path,
+        default=None,
+        help="a LoRA adapter directory from training.sft. The final verdict comes from "
+        "the fine-tuned student (C4); the teacher still rewrites and decomposes.",
+    )
+    p.add_argument(
         "--limit", type=int, default=None, help="claims to run; default is the whole split"
     )
     p.add_argument("--k", type=int, default=5)
@@ -73,12 +81,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def run_one(system: str, claims, llm, source, args, scorer=None, cfg=None) -> tuple[list, dict]:
+def run_one(
+    system: str, claims, llm, source, args, scorer=None, cfg=None, verifier=None
+) -> tuple[list, dict]:
     trajectories = []
     for i, claim in enumerate(claims, start=1):
         try:
             if system == "crag":
-                trajectories.append(crag(claim, llm, source, scorer, cfg))
+                trajectories.append(crag(claim, llm, source, scorer, cfg, verifier=verifier))
             elif system == "plain_rag":
                 trajectories.append(BASELINE_SYSTEMS[system](claim, llm, source, k=args.k))
             else:
@@ -122,6 +132,16 @@ def main(argv: list[str] | None = None) -> int:
         systems = list(BASELINE_SYSTEMS)
     else:
         systems = [args.system]
+
+    verifier = load_verifier(args.verifier_adapter)
+    if verifier is not None:
+        if systems != ["crag"]:
+            raise SystemExit(
+                "--verifier-adapter only applies to the crag system: the no-retrieval and "
+                "plain-RAG baselines are defined as the prompted model, and swapping the "
+                "verifier under them would make the comparison two changes rather than one."
+            )
+        print(f"[verimem] fine-tuned verifier: {verifier.model}")
 
     scorer = None
     if "crag" in systems:
@@ -198,7 +218,9 @@ def main(argv: list[str] | None = None) -> int:
     all_metrics = {}
     for system in systems:
         print(f"\n[verimem] === {system} ===")
-        trajectories, metrics = run_one(system, claims, llm, source, args, scorer, cfg)
+        trajectories, metrics = run_one(
+            system, claims, llm, source, args, scorer, cfg, verifier=verifier
+        )
         all_metrics[system] = metrics
         write_jsonl(trajectories, out / f"{system}_trajectories.jsonl")
         print(metrics["summary"])

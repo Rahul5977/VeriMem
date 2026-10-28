@@ -7,8 +7,17 @@ Three configurations, four poison rates, one table:
   if it moves, something is wrong with the harness rather than the system.
 * **memory** -- plain experience retrieval, ExpRAG as published. **H1** predicts this is
   where attack success climbs with the poison rate.
+* **gate only** / **trust only** -- each defence alone, so the combined result can be
+  attributed. H2 is not answered by showing the pair works; it needs to say which one does.
 * **gated memory** -- the same, plus C2's evaluator gate and C3's source trust.
   **H2** predicts this cuts attack success relative to plain memory.
+
+**Two adversaries, because the naive one flatters the defence.** `--adversary naive`
+cites known misinformation domains, which the system has never seen -- and C3 rejects an
+unseen domain on its prior alone, without judging anything it says. `--adversary adaptive`
+cites the domains the clean history trusts most, so C3 is defeated by construction and
+only C2's gate is left. The second number is the one that says whether the defence
+understands poisoning or merely distrusts newcomers.
 
 **The store is rebuilt per rate, and the targets never change.** Poisoning at 10% must
 differ from 5% only in how much fake experience exists -- same seed, same targets, same
@@ -35,7 +44,14 @@ from pathlib import Path
 from typing import Any
 
 from agent.crag import crag
-from attacks.memory import Target, choose_targets, load_misinfo_domains, poison_store, write_targets
+from attacks.memory import (
+    Target,
+    choose_targets,
+    load_misinfo_domains,
+    poison_store,
+    trusted_domains,
+    write_targets,
+)
 from core.config import RunConfig
 from core.llm import LLMClient
 from core.paths import DATA_DIR, run_dir
@@ -50,9 +66,17 @@ from retrieval.store import open_store
 RATES = (0.0, 0.05, 0.10, 0.20)
 
 # flag triples: (experience_retrieval, gate_experience, source_trust)
+#
+# `gate_only` and `trust_only` exist because the combined defence is not interpretable on
+# its own. In the first full sweep, gated_memory dropped every poisoned record -- but the
+# naive adversary cites domains the system has never seen, so C3 could reject them as
+# strangers without ever judging their content. Running each defence alone says which one
+# is load-bearing, and against which adversary.
 CONFIGS: dict[str, tuple[bool, bool, bool]] = {
     "no_memory": (False, False, False),
     "memory": (True, False, False),
+    "gate_only": (True, True, False),
+    "trust_only": (True, False, True),
     "gated_memory": (True, True, True),
 }
 
@@ -160,6 +184,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rates", type=float, nargs="*", default=list(RATES))
     p.add_argument("--configs", nargs="*", default=list(CONFIGS))
     p.add_argument("--seed", type=int, default=13)
+    p.add_argument(
+        "--adversary",
+        choices=["naive", "adaptive"],
+        default="naive",
+        help="naive cites known misinformation domains; adaptive cites the domains the "
+        "clean history trusts most, which defeats C3 by construction and leaves C2 alone",
+    )
     p.add_argument("--name", default="poisoning")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
@@ -187,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     n_cells = sum(len(args.rates) if CONFIGS[c][0] else 1 for c in args.configs)
     print(f"[verimem] {len(targets)} targets, {len(evaluated)} claims evaluated per cell")
     print(f"[verimem] clean store: {len(clean)} trajectories")
-    print(f"[verimem] {len(domains)} misinformation domains available to the adversary")
+    print(f"[verimem] adversary: {args.adversary}")
     print(f"[verimem] {n_cells} cells x {len(evaluated)} claims = {n_cells * len(evaluated)} runs")
     if args.dry_run:
         print("[verimem] --dry-run: nothing run.")
@@ -197,6 +228,14 @@ def main(argv: list[str] | None = None) -> int:
     scorer = load_scorer(args.evaluator)
     source = open_store(args.store)
     trust = build_trust(clean)
+
+    if args.adversary == "adaptive":
+        domains = trusted_domains(clean, trust)
+        print(f"[verimem] adaptive adversary impersonates: {', '.join(domains)}")
+        print(f"[verimem]   their trust: {[round(trust.trust(d), 3) for d in domains]}")
+    else:
+        print(f"[verimem] naive adversary draws from {len(domains)} misinformation domains")
+
     cfg_base = RunConfig(split=args.data.stem, seed=args.seed)
     cfg_base.api_model, cfg_base.api_base_url = llm.model, llm.base_url
 
@@ -239,7 +278,14 @@ def main(argv: list[str] | None = None) -> int:
     table = [c.as_dict() for c in cells]
     (out / "metrics.json").write_text(
         json.dumps(
-            {"cells": table, "n_targets": len(targets), "n_evaluated": len(evaluated)}, indent=2
+            {
+                "cells": table,
+                "n_targets": len(targets),
+                "n_evaluated": len(evaluated),
+                "adversary": args.adversary,
+                "attack_domains": list(domains),
+            },
+            indent=2,
         ),
         encoding="utf-8",
     )

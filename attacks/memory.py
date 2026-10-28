@@ -107,6 +107,46 @@ def load_misinfo_domains(path: Path | str | None) -> tuple[str, ...]:
     return tuple(ln for ln in lines if "." in ln and " " not in ln) or DEFAULT_DOMAINS
 
 
+def trusted_domains(
+    trajectories: Sequence[Trajectory],
+    trust: Any,
+    n: int = 5,
+    min_observations: int = 3,
+) -> tuple[str, ...]:
+    """The domains the system trusts most -- an adaptive adversary's source list.
+
+    The naive attack cites known misinformation sites, and C3 stops it without having to
+    know anything about the attack: an unseen domain starts at Beta(1, 3) = 0.25, below
+    the trust floor, so the fakes are dropped for being strangers. That makes the
+    headline defence look stronger than it is, because it never had to tell a *lie* from
+    the truth -- only a newcomer from a regular.
+
+    An adversary who reads the system's own history and cites its best-established
+    sources defeats trust by construction: those domains are above any usable floor. It
+    is the realistic attack on a deployed system, where the sources with track records
+    are public, and it leaves C2's evaluator gate as the only defence standing. Running
+    both adversaries is what separates the two contributions.
+
+    Domains with fewer than `min_observations` are skipped -- a domain seen once and
+    credited once sits at 0.5 on almost no evidence, and picking those would measure
+    prior-sensitivity rather than earned trust.
+    """
+    counts: dict[str, int] = {}
+    for t in trajectories:
+        if t.correct is None:
+            continue
+        for d in t.domains:
+            counts[d] = counts.get(d, 0) + 1
+    eligible = [d for d, c in counts.items() if c >= min_observations]
+    if not eligible:
+        # Nothing has a track record yet, so there is nothing to impersonate. Falling
+        # back to the naive list keeps the run honest rather than silently attacking
+        # with an empty domain pool.
+        return DEFAULT_DOMAINS
+    ranked = sorted(eligible, key=lambda d: (-trust.trust(d), d))
+    return tuple(ranked[:n])
+
+
 def choose_targets(claims: Sequence[Claim], n: int, seed: int = 13) -> list[Target]:
     """Pick claims to attack, balanced across gold labels so no one class dominates."""
     by_label: dict[str, list[Claim]] = {}
