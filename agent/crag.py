@@ -32,6 +32,7 @@ from core.llm import LLMClient
 from eval.datasets import Claim
 from evaluator.score import RelevanceScorer
 from experience.format import Step, Trajectory
+from experience.store import ExperienceStore
 from retrieval.refine import Strip, as_evidence, recompose, refine
 from retrieval.store import EvidenceSource
 
@@ -59,6 +60,7 @@ class CragResult:
     rewritten_query: str | None = None
     steps: list[Step] = field(default_factory=list)
     parsed: bool = True
+    n_memory: int = 0
 
 
 def grade_evidence(claim: str, evidence, scorer: RelevanceScorer) -> float:
@@ -117,6 +119,7 @@ def run_crag(
     scorer: RelevanceScorer,
     cfg: RunConfig | None = None,
     force_action: Action | None = None,
+    memory: ExperienceStore | None = None,
 ) -> CragResult:
     """Retrieve, grade, route, refine and/or re-search, then verify.
 
@@ -167,10 +170,27 @@ def run_crag(
         strips.sort(key=lambda s: -s.score)
         strips = strips[: cfg.top_k_strips]
 
+    # Experience retrieval (ExpRAG, and the surface C1 attacks). Off unless the flag is
+    # set, so a run with every flag off reproduces plain CRAG exactly (rule 4).
+    experience = ""
+    n_memory = 0
+    if memory is not None and cfg.experience_retrieval:
+        retrieved = memory.retrieve(
+            claim.claim,
+            claim_id=str(claim.id),
+            k=cfg.k_trajectories,
+            gate=cfg.gate_experience,
+            use_trust=cfg.source_trust,
+        )
+        n_memory = len(retrieved)
+        experience = memory.render(retrieved, token_cap=cfg.trajectory_token_cap)
+        steps.append(Step("experience", f"{n_memory} past verifications", score=float(n_memory)))
+
     block = recompose(strips)
-    reply = llm.complete(
-        f"Claim: {claim.claim}\n\nEvidence:\n{block}", system=SYSTEM, max_tokens=200
-    )
+    prompt = f"Claim: {claim.claim}\n\nEvidence:\n{block}"
+    if experience:
+        prompt = f"{experience}\n\n{prompt}"
+    reply = llm.complete(prompt, system=SYSTEM, max_tokens=200)
     parsed = parse_verdict(reply.text)
     steps.append(Step("verify", f"verdict from {len(strips)} strips"))
 
@@ -183,6 +203,7 @@ def run_crag(
         rewritten_query=rewritten,
         steps=steps,
         parsed=parsed.parsed,
+        n_memory=n_memory,
     )
 
 
@@ -192,9 +213,10 @@ def crag(
     source: EvidenceSource,
     scorer: RelevanceScorer,
     cfg: RunConfig | None = None,
+    memory: ExperienceStore | None = None,
 ) -> Trajectory:
     """CRAG as a `Trajectory`, so it stores, trains and evaluates like everything else."""
-    result = run_crag(claim, llm, source, scorer, cfg)
+    result = run_crag(claim, llm, source, scorer, cfg, memory=memory)
     return Trajectory(
         claim=claim.claim,
         verdict=result.verdict,
@@ -211,5 +233,6 @@ def crag(
             "parsed": result.parsed,
             "grade": round(result.grade, 4),
             "rewritten_query": result.rewritten_query,
+            "n_memory": result.n_memory,
         },
     )
