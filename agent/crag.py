@@ -69,6 +69,11 @@ class CragResult:
     parsed: bool = True
     n_memory: int = 0
     trust_stats: dict[str, Any] = field(default_factory=dict)
+    # Which past verifications reached the prompt. The project's stated output is a
+    # verdict *plus the past verifications it drew on*, so this is part of the answer,
+    # not instrumentation -- and the propagation study needs it to tell a real channel
+    # from a coincidence.
+    retrieved_ids: list[str] = field(default_factory=list)
 
 
 def grade_evidence(claim: str, evidence, scorer: RelevanceScorer) -> float:
@@ -185,6 +190,7 @@ def run_crag(
     # set, so a run with every flag off reproduces plain CRAG exactly (rule 4).
     experience = ""
     n_memory = 0
+    retrieved_ids: list[str] = []
     if memory is not None and cfg.experience_retrieval:
         retrieved = memory.retrieve(
             claim.claim,
@@ -194,8 +200,15 @@ def run_crag(
             use_trust=cfg.source_trust,
         )
         n_memory = len(retrieved)
+        retrieved_ids = [r.trajectory.claim_id or r.trajectory.id for r in retrieved]
         experience = memory.render(retrieved, token_cap=cfg.trajectory_token_cap)
-        steps.append(Step("experience", f"{n_memory} past verifications", score=float(n_memory)))
+        steps.append(
+            Step(
+                "experience",
+                f"{n_memory} past verifications: {', '.join(retrieved_ids) or 'none'}",
+                score=float(n_memory),
+            )
+        )
 
     # C3 on the evidence path. This is the only defence source poisoning can be met
     # with: a fabricated page is written about the claim and *is* relevant, so the
@@ -237,6 +250,7 @@ def run_crag(
         parsed=parsed.parsed,
         n_memory=n_memory,
         trust_stats=trust_stats.as_dict(),
+        retrieved_ids=retrieved_ids,
     )
 
 
@@ -281,6 +295,7 @@ def crag(
             "rewritten_query": result.rewritten_query,
             "verifier": getattr(verifier, "model", None) or "prompted",
             **({"trust": result.trust_stats} if result.trust_stats else {}),
+            **({"retrieved_ids": result.retrieved_ids} if result.retrieved_ids else {}),
             "n_memory": result.n_memory,
         },
     )
