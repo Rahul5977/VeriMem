@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,7 @@ from attacks.memory import (
 from attacks.propagation import Pair, choose_pairs, corrupted_copy, write_pairs
 from core.config import RunConfig
 from core.llm import LLMClient
+from core.parallel import Progress, map_ordered, resolve_workers
 from core.paths import DATA_DIR, announce_metrics, run_dir
 from eval.datasets import Claim, load_averitec
 from eval.metrics import score as score_metrics
@@ -150,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
         "they cannot help here -- A's record is genuine -- so this measures that claim.",
     )
     p.add_argument("--seed", type=int, default=13)
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="run pairs concurrently. Each pair is four verifications, almost all of it blocked on the teacher endpoint.",
+    )
     p.add_argument("--name", default="propagation")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
@@ -199,14 +207,14 @@ def main(argv: list[str] | None = None) -> int:
     poisoned_store_trajectories, _ = poison_store(clean, targets, args.rate, args.seed, domains)
     poisoned = ExperienceStore(poisoned_store_trajectories, scorer=scorer, trust=trust)
 
-    outcomes: list[PairOutcome] = []
     corrupted_records: list[Trajectory] = []
+    records_lock = threading.Lock()
 
-    for i, pair in enumerate(pairs, start=1):
+    def run_pair(pair: Pair) -> PairOutcome | None:
         target_claim = by_id.get(pair.target_id)
         neighbour_claim = by_id.get(pair.neighbour_id)
         if target_claim is None or neighbour_claim is None:
-            continue
+            return None
 
         # Stage 1: A under attack.
         a = crag(target_claim, llm, source, scorer, cfg_attack, memory=poisoned)
@@ -217,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
             target_was_flipped=bool(wanted) and a.verdict == wanted,
         )
         if outcome.target_was_flipped:
-            corrupted_records.append(corrupted_copy(a, a.verdict))
+            with records_lock:
+                corrupted_records.append(corrupted_copy(a, a.verdict))
 
         # Stage 2: B under each condition. The stores differ only in A's record.
         for condition in CONDITIONS:
@@ -228,10 +237,13 @@ def main(argv: list[str] | None = None) -> int:
             # and a verdict change is pipeline noise rather than propagation.
             used = b.metadata.get("retrieved_ids", [])
             outcome.retrieved_a[condition] = str(a.claim_id) in used
-        outcomes.append(outcome)
-        if i % 10 == 0 or i == len(pairs):
-            n_prop = sum(1 for o in outcomes if o.propagated)
-            print(f"  [{i}/{len(pairs)}] {n_prop} propagated so far", flush=True)
+        return outcome
+
+    workers = resolve_workers(args.workers)
+    if workers > 1:
+        print(f"[verimem] {workers} workers")
+    progress = Progress(len(pairs), every=10)
+    outcomes = [o for o in map_ordered(run_pair, pairs, workers, on_done=progress.tick) if o]
 
     flipped = [o for o in outcomes if o.target_was_flipped]
     propagated = [o for o in flipped if o.propagated]

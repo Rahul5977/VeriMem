@@ -246,6 +246,9 @@ class LLMClient:
         self._client = None
         self.cache = get_cache(cache_namespace)
         self.usage = Usage()
+        # Guards `usage`, which several worker threads add to at once when a runner is
+        # given --workers. The ledger and the cache hold their own locks already.
+        self._usage_lock = threading.Lock()
 
         if cap_usd is None:
             raw = os.environ.get("VERIMEM_API_SPEND_CAP_USD", "").strip()
@@ -302,7 +305,8 @@ class LLMClient:
         hit = self.cache.get(key)
         if hit is not None:
             response = LLMResponse(**{**hit, "cached": True})
-            self.usage.add(response)
+            with self._usage_lock:
+                self.usage.add(response)
             return response
 
         self.ledger.check(self._estimate_cost(payload, max_tokens))
@@ -310,7 +314,8 @@ class LLMClient:
         response = self._parse(raw)
         self.cache.set(key, {k: v for k, v in vars(response).items() if k != "cached"})
         self.ledger.record(response, self.provider)
-        self.usage.add(response)
+        with self._usage_lock:
+            self.usage.add(response)
         return response
 
     def estimate(self, n_calls: int, avg_input_tokens: int, avg_output_tokens: int) -> float:

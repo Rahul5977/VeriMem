@@ -29,6 +29,7 @@ be retrieved into its own verification.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -113,6 +114,10 @@ class ExperienceStore:
         self._by_id = {t.id: t for t in self.trajectories}
         self._index = BM25Index((t.id, t.claim) for t in self.trajectories)
         self.stats = RetrievalStats()
+        # The counters are read back as a reported number -- `poison_pass_rate` is in
+        # the C1 table -- so a lost increment under --workers would be a wrong result,
+        # not just untidy bookkeeping.
+        self._stats_lock = threading.Lock()
 
     def __len__(self) -> int:
         return len(self.trajectories)
@@ -149,16 +154,18 @@ class ExperienceStore:
         candidates = [Retrieved(self._by_id[tid], round(score, 4)) for tid, score in hits]
 
         for item in candidates:
-            self.stats.considered += 1
-            if item.trajectory.poisoned:
-                self.stats.poisoned_considered += 1
+            with self._stats_lock:
+                self.stats.considered += 1
+                if item.trajectory.poisoned:
+                    self.stats.poisoned_considered += 1
 
             if use_trust and self.trust_model is not None:
                 domains = item.trajectory.domains
                 item.min_trust = min(self.trust_model.trust(d) for d in domains) if domains else 1.0
                 if item.min_trust < self.trust_floor:
                     item.dropped_by = "trust"
-                    self.stats.dropped_by_trust += 1
+                    with self._stats_lock:
+                        self.stats.dropped_by_trust += 1
                     continue
 
             if gate and self.scorer is not None:
@@ -175,12 +182,14 @@ class ExperienceStore:
                 item.gate_score = round(self._supports_own_verdict(item.trajectory), 4)
                 if item.gate_score < self.gate_threshold:
                     item.dropped_by = "gate"
-                    self.stats.dropped_by_gate += 1
+                    with self._stats_lock:
+                        self.stats.dropped_by_gate += 1
                     continue
 
-            self.stats.kept += 1
-            if item.trajectory.poisoned:
-                self.stats.poisoned_kept += 1
+            with self._stats_lock:
+                self.stats.kept += 1
+                if item.trajectory.poisoned:
+                    self.stats.poisoned_kept += 1
 
         kept = [c for c in candidates if c.kept][:k]
         return kept

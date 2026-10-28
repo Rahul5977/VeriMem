@@ -24,6 +24,7 @@ from agent.baselines import SYSTEMS as BASELINE_SYSTEMS
 from agent.crag import crag
 from core.config import RunConfig
 from core.llm import LLMClient, is_free
+from core.parallel import Progress, map_ordered, resolve_workers
 from core.paths import announce_metrics, run_dir
 from eval.datasets import label_counts, load_averitec, sample
 from eval.metrics import score
@@ -96,6 +97,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--seed", type=int, default=13)
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="run claims concurrently. Almost all the wall-clock is spent blocked on the teacher endpoint, so 8 workers is roughly a 4x speedup. Verdicts are unchanged: every call is cached by input hash and nothing depends on claim order.",
+    )
     p.add_argument("--name", default=None, help="run name; default <system>-<split>")
     p.add_argument("--dry-run", action="store_true", help="load, estimate, stop")
     p.add_argument("--yes", action="store_true", help="skip the paid-run confirmation")
@@ -105,29 +112,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def run_one(
     system: str, claims, llm, source, args, scorer=None, cfg=None, verifier=None, memory=None
 ) -> tuple[list, dict]:
-    trajectories = []
-    for i, claim in enumerate(claims, start=1):
+    def verify(claim):
         try:
             if system == "crag":
-                trajectories.append(
-                    crag(claim, llm, source, scorer, cfg, memory=memory, verifier=verifier)
-                )
-            elif system == "plain_rag":
-                trajectories.append(BASELINE_SYSTEMS[system](claim, llm, source, k=args.k))
-            else:
-                trajectories.append(BASELINE_SYSTEMS[system](claim, llm))
+                return crag(claim, llm, source, scorer, cfg, memory=memory, verifier=verifier)
+            if system == "plain_rag":
+                return BASELINE_SYSTEMS[system](claim, llm, source, k=args.k)
+            return BASELINE_SYSTEMS[system](claim, llm)
         except Exception as exc:  # noqa: BLE001 - any endpoint failure lands here
             if "Connection" not in type(exc).__name__ and "Connection" not in str(exc):
                 raise
             # Every completed call is already cached, so this is a pause, not a loss.
             raise SystemExit(
-                f"\nThe endpoint stopped responding at claim {i}/{len(claims)} "
-                f"({system}).\n"
+                f"\nThe endpoint stopped responding during {system}.\n"
                 f"  {llm.base_url} refused the connection.\n"
-                f"  {i - 1} calls in this system are cached and will replay instantly.\n"
-                f"  Restart the server and run the same command again to resume."
+                "  Completed calls are cached and will replay instantly.\n"
+                "  Restart the server and run the same command again to resume."
             ) from exc
-        print(f"  [{i}/{len(claims)}] {trajectories[-1].verdict:<22} {claim.claim[:58]}")
+
+    progress = Progress(len(claims), label=system, every=25)
+    workers = resolve_workers(getattr(args, "workers", None))
+    trajectories = map_ordered(verify, claims, workers, on_done=progress.tick)
 
     labelled = [t for t in trajectories if t.gold_label]
     metrics = score(

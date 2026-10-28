@@ -54,6 +54,7 @@ from attacks.memory import (
 )
 from core.config import RunConfig
 from core.llm import LLMClient
+from core.parallel import Progress, map_ordered, resolve_workers
 from core.paths import DATA_DIR, announce_metrics, run_dir
 from eval.datasets import Claim, load_averitec, sample
 from eval.metrics import attack_success
@@ -130,6 +131,7 @@ def run_cell(
     cfg_base: RunConfig,
     domains: Sequence[str],
     seed: int,
+    workers: int = 1,
 ) -> tuple[Cell, dict[str, str]]:
     retrieval_on, gate, use_trust = CONFIGS[config]
     cfg = cfg_base.with_(
@@ -148,14 +150,14 @@ def run_cell(
             trust_floor=cfg.trust_floor,
         )
 
-    verdicts: dict[str, str] = {}
-    trajectories = []
-    for i, claim in enumerate(claims, start=1):
-        t = crag(claim, llm, source, scorer, cfg, memory=memory)
-        trajectories.append(t)
-        verdicts[str(claim.id)] = t.verdict
-        if i % 25 == 0 or i == len(claims):
-            print(f"    [{i}/{len(claims)}]", flush=True)
+    def verify(claim: Claim) -> Trajectory:
+        return crag(claim, llm, source, scorer, cfg, memory=memory)
+
+    progress = Progress(len(claims))
+    trajectories = map_ordered(verify, claims, workers, on_done=progress.tick)
+    verdicts: dict[str, str] = {
+        str(c.id): t.verdict for c, t in zip(claims, trajectories, strict=True)
+    }
 
     labelled = [t for t in trajectories if t.gold_label]
     m = score_metrics([t.gold_label for t in labelled], [t.verdict for t in labelled])
@@ -184,6 +186,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rates", type=float, nargs="*", default=list(RATES))
     p.add_argument("--configs", nargs="*", default=list(CONFIGS))
     p.add_argument("--seed", type=int, default=13)
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="run claims concurrently. Almost all the wall-clock is spent blocked on the teacher endpoint, so 8 workers is roughly a 4x speedup. Verdicts are unchanged: every call is cached by input hash and nothing depends on claim order.",
+    )
     p.add_argument(
         "--adversary",
         choices=["naive", "adaptive"],
@@ -224,6 +232,9 @@ def main(argv: list[str] | None = None) -> int:
         print("[verimem] --dry-run: nothing run.")
         return 0
 
+    workers = resolve_workers(args.workers)
+    if workers > 1:
+        print(f"[verimem] {workers} workers")
     llm = LLMClient()
     scorer = load_scorer(args.evaluator)
     source = open_store(args.store)
@@ -263,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
                 cfg_base,
                 domains,
                 args.seed,
+                workers,
             )
             if rate == 0.0:
                 clean_verdicts[config] = verdicts

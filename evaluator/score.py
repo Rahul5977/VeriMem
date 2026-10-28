@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
@@ -67,6 +68,10 @@ class T5Scorer:
         self.batch_size = batch_size
         self.max_tokens = max_tokens
         self._model = None
+        # One torch module shared by every worker thread. The forward pass holds the GIL
+        # regardless, so serialising it costs nothing and avoids concurrent use of the
+        # same module and CUDA stream. The parallelism worth having is in the HTTP calls.
+        self._lock = threading.Lock()
         self._tokenizer = None
         self._yes = self._no = None
 
@@ -93,6 +98,10 @@ class T5Scorer:
     def score(self, claim: str, passages: Sequence[str]) -> list[float]:
         if not passages:
             return []
+        with self._lock:
+            return self._score_locked(claim, passages)
+
+    def _score_locked(self, claim: str, passages: Sequence[str]) -> list[float]:
         self._load()
         torch = self._torch
         device = next(self._model.parameters()).device
