@@ -46,7 +46,7 @@ def test_trust_never_sees_the_attack_domains():
     attack domains are bad from the attack itself, which no deployed system could do
     before being attacked."""
     t = build_trust([traj("a", ("bbc.co.uk",))])
-    assert t.trust("americasfreedomfighters.com") == 0.5  # unseen, so the prior
+    assert t.trust("americasfreedomfighters.com") == 0.25  # unseen, so the prior
 
 
 def test_trust_blames_domains_behind_wrong_verdicts():

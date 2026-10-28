@@ -151,23 +151,27 @@ def test_trust_keeps_reliable_sources():
     assert len(s.retrieve("metro claim", k=3, use_trust=True)) == 1
 
 
-def test_unseen_domain_sits_at_one_half():
-    assert BetaTrust().trust("never-seen.com") == 0.5
+def test_an_unseen_domain_is_not_trusted_by_default():
+    """Beta(1, 3), not Beta(1, 1). A stranger at 0.5 sits above any usable floor, and a
+    cold-start adversary with fresh domains walks straight through."""
+    assert BetaTrust().trust("never-seen.com") == 0.25
 
 
 def test_trust_moves_with_evidence():
     t = BetaTrust()
-    t.update("a.com", True)
-    t.update("a.com", True)
-    t.update("b.com", False)
-    t.update("b.com", False)
-    assert t.trust("a.com") > 0.5 > t.trust("b.com")
+    for _ in range(4):
+        t.update("a.com", True)
+    for _ in range(4):
+        t.update("b.com", False)
+    assert t.trust("a.com") > t.trust("b.com")
+    assert t.trust("a.com") > 0.5
 
 
 def test_observe_credits_every_domain_of_a_correct_verification():
     t = BetaTrust()
+    base = t.trust("a.com")
     t.observe(traj("x", domains=("a.com", "b.com"), correct=True))
-    assert t.trust("a.com") > 0.5 and t.trust("b.com") > 0.5
+    assert t.trust("a.com") > base and t.trust("b.com") > base
 
 
 def test_observe_ignores_unlabelled_trajectories():
@@ -228,3 +232,71 @@ def test_render_produces_a_context_block():
 
 def test_render_of_nothing_is_empty():
     assert store_of().render([]) == ""
+
+
+# --- the re-specified gate: does the evidence support its own verdict? --------------
+
+
+def test_gate_asks_whether_evidence_supports_the_verdict_not_the_new_claim():
+    """The first version scored relevance to the incoming claim and was defeated: a
+    poisoned trajectory is written *about* the target, so it is genuinely relevant.
+    Relevance is not truthfulness."""
+    seen = []
+
+    class Recording:
+        def score(self, claim, passages):
+            seen.append(claim)
+            return [0.5] * len(passages)
+
+    s = store_of(traj("The Kochi metro opened in 2017"), scorer=Recording(), gate_threshold=-1.0)
+    s.retrieve("When did the Kochi metro first open?", k=1, gate=True)
+    assert seen, "the gate never ran"
+    assert any("The verdict was" in q for q in seen), seen
+
+
+def test_a_trajectory_with_no_evidence_cannot_justify_itself():
+    t = Trajectory(claim="a metro claim", verdict="Supported", evidence=[])
+    s = store_of(t, scorer=FixedScorer(0.9), gate_threshold=0.0)
+    assert s.retrieve("a metro claim about something", k=1, gate=True) == []
+
+
+# --- the re-specified trust prior ---------------------------------------------------
+
+
+def test_an_unseen_domain_starts_below_the_floor():
+    """A cold-start adversary registering fresh domains walked through the old 0.5
+    prior. Trust that only distrusts domains it has watched fail cannot defend against
+    a new attacker, which is the only kind worth defending against."""
+    assert BetaTrust().trust("brand-new-site.com") < 0.3
+
+
+def test_a_domain_can_earn_trust():
+    t = BetaTrust()
+    for _ in range(4):
+        t.update("earning.com", True)
+    assert t.trust("earning.com") > 0.5
+
+
+def test_an_established_domain_is_unaffected_by_the_stricter_prior():
+    t = BetaTrust()
+    for _ in range(10):
+        t.update("bbc.co.uk", True)
+    assert t.trust("bbc.co.uk") > 0.75
+
+
+def test_failures_still_push_trust_down():
+    t = BetaTrust()
+    for _ in range(5):
+        t.update("bad.com", False)
+    assert t.trust("bad.com") < 0.2
+
+
+def test_trust_now_drops_a_fresh_attack_domain():
+    """The whole point: the fakes cite domains the system has never seen."""
+    trust = BetaTrust()
+    for _ in range(10):
+        trust.observe(traj("a real claim", domains=("bbc.co.uk",), correct=True))
+    fakes = poisoned("The Kochi metro opened in 2017", n=2)
+    s = store_of(*fakes, trust=trust, trust_floor=0.3)
+    assert s.retrieve("The Kochi metro opened in 2017", claim_id="t", k=5, use_trust=True) == []
+    assert s.stats.dropped_by_trust == 2

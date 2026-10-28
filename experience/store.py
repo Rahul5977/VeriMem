@@ -162,11 +162,17 @@ class ExperienceStore:
                     continue
 
             if gate and self.scorer is not None:
-                # Score the trajectory's own evidence against the new claim. A fabricated
-                # record asserts a verdict its evidence does not actually support, so it
-                # should score low here even though it looks well-formed.
-                text = item.trajectory.render_for_context(token_cap=400)
-                item.gate_score = round(self.scorer.score(claim, [text])[0], 4)
+                # Ask whether the trajectory's evidence supports *its own* verdict, not
+                # whether the trajectory is relevant to the new claim.
+                #
+                # The first version asked the latter, and it was defeated: a poisoned
+                # trajectory is written *about* the target claim, so it is genuinely
+                # relevant and the evaluator scored it high -- correctly. Relevance is
+                # not truthfulness. Scoring the evidence against the verdict it is
+                # supposed to justify is a question fabricated evidence can actually
+                # fail, because the fakes assert a conclusion their generic text does
+                # not establish.
+                item.gate_score = round(self._supports_own_verdict(item.trajectory), 4)
                 if item.gate_score < self.gate_threshold:
                     item.dropped_by = "gate"
                     self.stats.dropped_by_gate += 1
@@ -178,6 +184,20 @@ class ExperienceStore:
 
         kept = [c for c in candidates if c.kept][:k]
         return kept
+
+    def _supports_own_verdict(self, trajectory: Trajectory) -> float:
+        """Does this trajectory's evidence justify the verdict it reached?
+
+        Scored as relevance between the trajectory's own claim-plus-verdict and each of
+        its evidence passages, taking the best. A genuine verification cites text that
+        bears on its conclusion; a fabricated one cites text asserting the conclusion
+        without establishing it.
+        """
+        passages = [e.text for e in trajectory.evidence if e.text]
+        if not passages:
+            return -1.0  # a verification resting on no evidence justifies nothing
+        question = f"{trajectory.claim} The verdict was: {trajectory.verdict}."
+        return max(self.scorer.score(question, passages), default=-1.0)
 
     def render(self, retrieved: Sequence[Retrieved], token_cap: int = 1000) -> str:
         """The block that goes into the verifier's prompt."""
@@ -205,23 +225,31 @@ class UniformTrust:
 class BetaTrust:
     """C3: Beta(alpha, beta) per domain, trust = alpha / (alpha + beta).
 
-    Starts at Beta(1, 1), so an unseen domain sits at 0.5 -- neither trusted nor
-    distrusted. Evidence from a domain that supported a correct verdict increments
-    alpha; one that supported an incorrect verdict increments beta.
+    **An unseen domain is not a trusted one.** The first version used Beta(1, 1), which
+    puts a stranger at 0.5 -- above any floor low enough to be usable, so a cold-start
+    adversary registering fresh domains walked straight through. Trust that only
+    distrusts domains it has already watched fail cannot defend against a new attacker,
+    which is the only kind worth defending against.
+
+    Beta(1, 3) starts a stranger at 0.25: below a 0.3 floor, so an unknown domain must
+    earn its way in rather than being believed by default. Two successful verifications
+    lift it to 0.5; a domain with a real track record is unaffected.
     """
 
     alpha: dict[str, float] = field(default_factory=dict)
     beta: dict[str, float] = field(default_factory=dict)
-    prior: float = 1.0
+    prior_alpha: float = 1.0
+    prior_beta: float = 3.0
 
     def trust(self, domain: str) -> float:
-        a = self.alpha.get(domain, self.prior)
-        b = self.beta.get(domain, self.prior)
+        a = self.alpha.get(domain, self.prior_alpha)
+        b = self.beta.get(domain, self.prior_beta)
         return a / (a + b)
 
     def update(self, domain: str, was_correct: bool) -> None:
-        target = self.alpha if was_correct else self.beta
-        target[domain] = target.get(domain, self.prior) + 1.0
+        key = self.alpha if was_correct else self.beta
+        prior = self.prior_alpha if was_correct else self.prior_beta
+        key[domain] = key.get(domain, prior) + 1.0
 
     def observe(self, trajectory: Trajectory) -> None:
         """Credit or blame every domain a completed verification relied on."""
