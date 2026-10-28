@@ -99,3 +99,75 @@ def as_evidence(strips: Sequence[Strip]) -> list[Evidence]:
         )
         for s in strips
     ]
+
+
+@dataclass
+class TrustFilterStats:
+    """What trust did to the evidence, so a run can report the cost of the defence."""
+
+    considered: int = 0
+    kept: int = 0
+    dropped: int = 0
+    poisoned_considered: int = 0
+    poisoned_kept: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "strips_considered": self.considered,
+            "strips_kept": self.kept,
+            "strips_dropped_by_trust": self.dropped,
+            "poisoned_strips_considered": self.poisoned_considered,
+            "poisoned_strips_kept": self.poisoned_kept,
+            "poison_pass_rate": round(self.poisoned_kept / self.poisoned_considered, 4)
+            if self.poisoned_considered
+            else None,
+        }
+
+
+def filter_by_trust(
+    strips: Sequence[Strip],
+    trust: object,
+    floor: float = 0.3,
+    fake_urls: frozenset[str] | set[str] = frozenset(),
+    stats: TrustFilterStats | None = None,
+    keep_at_least: int = 1,
+) -> list[Strip]:
+    """C3 on the evidence path: drop strips from publishers below the trust floor.
+
+    This is the defence source poisoning has to be met with. A fabricated *page* is
+    written about the target claim in detail with the stance the adversary wants, so it
+    is genuinely relevant and the evaluator scores it high -- correctly. Relevance is not
+    truthfulness, and CRAG's grading only measures the former, so C2 cannot help here.
+    What distinguishes the fake is who published it.
+
+    `keep_at_least` is a floor on the floor. Dropping every strip would hand the verifier
+    an empty evidence block, and a verdict of "Not enough evidence" on no evidence is not
+    a defence -- it is the attack succeeding by a different route. When nothing clears the
+    threshold the most-trusted strips are kept and the verifier sees weak evidence rather
+    than none.
+    """
+    stats = stats if stats is not None else TrustFilterStats()
+    if not strips:
+        return []
+
+    scored = []
+    for strip in strips:
+        stats.considered += 1
+        poisoned = strip.url in fake_urls
+        if poisoned:
+            stats.poisoned_considered += 1
+        scored.append((strip, trust.trust(strip.domain), poisoned))  # type: ignore[attr-defined]
+
+    kept = [(s, t, p) for s, t, p in scored if t >= floor]
+    if not kept:
+        # Ranked by trust, then by the evaluator's own score, so the fallback is the best
+        # available evidence rather than an arbitrary slice.
+        scored.sort(key=lambda row: (-row[1], -row[0].score))
+        kept = scored[:keep_at_least]
+
+    for _, _, poisoned in kept:
+        stats.kept += 1
+        if poisoned:
+            stats.poisoned_kept += 1
+    stats.dropped += stats.considered - len(kept)
+    return [s for s, _, _ in kept]

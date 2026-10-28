@@ -163,15 +163,39 @@ class PooledKnowledgeStore:
     retrieval against a real corpus that we can build for free.
     """
 
-    def __init__(self, path: Path | str, apply_blocklist: bool = True) -> None:
-        self.path = Path(path)
+    def __init__(self, path: Path | str | None, apply_blocklist: bool = True) -> None:
+        self.path = Path(path) if path is not None else None
         self._passages: dict[str, tuple[str, str]] = {}
         self._index: BM25Index | None = None
         self.apply_blocklist = apply_blocklist
+        self._rows: list[dict[str, Any]] | None = None
+
+    @classmethod
+    def from_rows(
+        cls, rows: Sequence[dict[str, Any]], apply_blocklist: bool = True
+    ) -> PooledKnowledgeStore:
+        """A pool held in memory rather than read from disk.
+
+        Source poisoning needs a corpus with fabricated pages in it, and ethics rule 10
+        says fabricated pages are never written into the real pool. So the poisoned
+        corpus is assembled here, used for one run, and discarded with the process.
+        """
+        store = cls(None, apply_blocklist)
+        store._rows = list(rows)
+        return store
 
     def _build(self) -> None:
         if self._index is not None:
             return
+        if self._rows is not None:
+            for entry in self._rows:
+                for url, passage in _documents(entry):
+                    if self.apply_blocklist and is_blocked(url):
+                        continue
+                    self._passages[f"p{len(self._passages)}"] = (url, passage)
+            self._index = BM25Index((pid, text) for pid, (_, text) in self._passages.items())
+            return
+        assert self.path is not None
         with self.path.open(encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()

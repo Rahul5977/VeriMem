@@ -33,7 +33,14 @@ from eval.datasets import Claim
 from evaluator.score import RelevanceScorer
 from experience.format import Step, Trajectory
 from experience.store import ExperienceStore
-from retrieval.refine import Strip, as_evidence, recompose, refine
+from retrieval.refine import (
+    Strip,
+    TrustFilterStats,
+    as_evidence,
+    filter_by_trust,
+    recompose,
+    refine,
+)
 from retrieval.store import EvidenceSource
 
 Action = Literal["correct", "incorrect", "ambiguous"]
@@ -61,6 +68,7 @@ class CragResult:
     steps: list[Step] = field(default_factory=list)
     parsed: bool = True
     n_memory: int = 0
+    trust_stats: dict[str, Any] = field(default_factory=dict)
 
 
 def grade_evidence(claim: str, evidence, scorer: RelevanceScorer) -> float:
@@ -121,6 +129,8 @@ def run_crag(
     force_action: Action | None = None,
     memory: ExperienceStore | None = None,
     verifier: Any = None,
+    trust: Any = None,
+    fake_urls: frozenset[str] = frozenset(),
 ) -> CragResult:
     """Retrieve, grade, route, refine and/or re-search, then verify.
 
@@ -187,6 +197,23 @@ def run_crag(
         experience = memory.render(retrieved, token_cap=cfg.trajectory_token_cap)
         steps.append(Step("experience", f"{n_memory} past verifications", score=float(n_memory)))
 
+    # C3 on the evidence path. This is the only defence source poisoning can be met
+    # with: a fabricated page is written about the claim and *is* relevant, so the
+    # evaluator scores it high and C2 has nothing to object to. See refine.filter_by_trust.
+    trust_stats = TrustFilterStats()
+    if trust is not None and cfg.source_trust:
+        before = len(strips)
+        strips = filter_by_trust(
+            strips, trust, floor=cfg.trust_floor, fake_urls=fake_urls, stats=trust_stats
+        )
+        steps.append(
+            Step(
+                "trust",
+                f"{before - len(strips)} of {before} strips below {cfg.trust_floor}",
+                score=float(before - len(strips)),
+            )
+        )
+
     block = recompose(strips)
     prompt = f"Claim: {claim.claim}\n\nEvidence:\n{block}"
     if experience:
@@ -209,6 +236,7 @@ def run_crag(
         steps=steps,
         parsed=parsed.parsed,
         n_memory=n_memory,
+        trust_stats=trust_stats.as_dict(),
     )
 
 
@@ -220,9 +248,21 @@ def crag(
     cfg: RunConfig | None = None,
     memory: ExperienceStore | None = None,
     verifier: Any = None,
+    trust: Any = None,
+    fake_urls: frozenset[str] = frozenset(),
 ) -> Trajectory:
     """CRAG as a `Trajectory`, so it stores, trains and evaluates like everything else."""
-    result = run_crag(claim, llm, source, scorer, cfg, memory=memory, verifier=verifier)
+    result = run_crag(
+        claim,
+        llm,
+        source,
+        scorer,
+        cfg,
+        memory=memory,
+        verifier=verifier,
+        trust=trust,
+        fake_urls=fake_urls,
+    )
     return Trajectory(
         claim=claim.claim,
         verdict=result.verdict,
@@ -240,6 +280,7 @@ def crag(
             "grade": round(result.grade, 4),
             "rewritten_query": result.rewritten_query,
             "verifier": getattr(verifier, "model", None) or "prompted",
+            **({"trust": result.trust_stats} if result.trust_stats else {}),
             "n_memory": result.n_memory,
         },
     )
