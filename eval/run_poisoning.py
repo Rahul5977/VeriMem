@@ -54,7 +54,7 @@ from attacks.memory import (
 )
 from core.config import RunConfig
 from core.llm import LLMClient
-from core.paths import DATA_DIR, run_dir
+from core.paths import DATA_DIR, announce_metrics, run_dir
 from eval.datasets import Claim, load_averitec, sample
 from eval.metrics import attack_success
 from eval.metrics import score as score_metrics
@@ -276,6 +276,14 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     table = [c.as_dict() for c in cells]
+    payload = {
+        "cells": table,
+        "n_targets": len(targets),
+        "n_evaluated": len(evaluated),
+        "adversary": args.adversary,
+        "attack_domains": list(domains),
+    }
+    announce_metrics(out, payload)
     (out / "metrics.json").write_text(
         json.dumps(
             {

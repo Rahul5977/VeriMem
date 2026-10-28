@@ -52,7 +52,7 @@ from attacks.memory import (
 from attacks.sources import poison_pool, poisoned_urls
 from core.config import RunConfig
 from core.llm import LLMClient
-from core.paths import DATA_DIR, run_dir
+from core.paths import DATA_DIR, announce_metrics, run_dir
 from eval.datasets import Claim, load_averitec
 from eval.metrics import attack_success
 from eval.metrics import score as score_metrics
@@ -282,19 +282,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"grade fake {g.get('mean_grade_fake')} vs real {g.get('mean_grade_real')}"
             )
 
-    (out / "metrics.json").write_text(
-        json.dumps(
-            {
-                "cells": [c.as_dict() for c in cells],
-                "n_targets": len(targets),
-                "n_evaluated": len(evaluated),
-                "adversary": args.adversary,
-                "attack_domains": list(domains),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    payload = {
+        "cells": [c.as_dict() for c in cells],
+        "n_targets": len(targets),
+        "n_evaluated": len(evaluated),
+        "adversary": args.adversary,
+        "attack_domains": list(domains),
+    }
+    announce_metrics(out, payload)
+    (out / "metrics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     print("\n[verimem] === attack success rate by pages per target ===")
     print("  " + "config".ljust(16) + "".join(f"{n:>9}" for n in args.pages))

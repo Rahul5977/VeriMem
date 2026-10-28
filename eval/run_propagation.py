@@ -50,7 +50,7 @@ from attacks.memory import (
 from attacks.propagation import Pair, choose_pairs, corrupted_copy, write_pairs
 from core.config import RunConfig
 from core.llm import LLMClient
-from core.paths import DATA_DIR, run_dir
+from core.paths import DATA_DIR, announce_metrics, run_dir
 from eval.datasets import Claim, load_averitec
 from eval.metrics import score as score_metrics
 from eval.run_poisoning import build_trust
@@ -260,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         "neighbours": per_condition,
         "pairs": [o.as_dict() for o in outcomes],
     }
+    announce_metrics(out, metrics)
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     write_jsonl(corrupted_records, out / "corrupted_trajectories.jsonl")
 

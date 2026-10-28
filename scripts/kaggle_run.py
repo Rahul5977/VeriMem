@@ -163,6 +163,45 @@ def log(slug: str, owner: str, grep: str | None, tail: int) -> str:
     return "\n".join(deduped[-tail:] if tail else deduped)
 
 
+METRICS_MARKER = "VERIMEM_METRICS_JSON"
+
+
+def harvest(slug: str, owner: str, dest: Path) -> list[Path]:
+    """Recover metrics files that a run printed to its log.
+
+    `/kernels/output/download` refuses paths under `results/`, and the file listing is
+    paginated with the first page swamped by hashed cache entries, so neither API route
+    reaches a run's `metrics.json`. The runs therefore print each metrics file to stdout
+    on one line as `VERIMEM_METRICS_JSON <relative/path> {...}`, and this reassembles
+    them on disk.
+
+    Without this the headline numbers exist only inside a Kaggle kernel's log, which the
+    next push to that slug overwrites.
+    """
+    written: list[Path] = []
+    for line in log(slug, owner, METRICS_MARKER, 0).splitlines():
+        _, _, rest = line.partition(METRICS_MARKER)
+        rel, _, blob = rest.strip().partition(" ")
+        if not rel or not blob:
+            continue
+        try:
+            payload = json.loads(blob)
+        except json.JSONDecodeError:
+            print(f"[kaggle] skipped unparseable metrics line for {rel}")
+            continue
+        out = dest / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"[kaggle] {rel} -> {out}")
+        written.append(out)
+    if not written:
+        print(
+            f"[kaggle] no {METRICS_MARKER} lines in {slug}'s log. Only runs whose "
+            "notebook emits them can be harvested."
+        )
+    return written
+
+
 def fetch(slug: str, owner: str, name: str, dest: Path) -> Path:
     """Download one output file by its path inside /kaggle/working."""
     q = urllib.parse.urlencode({"userName": owner, "kernelSlug": slug, "fileName": name})
@@ -214,6 +253,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--grep", default=None)
     sp.add_argument("--tail", type=int, default=0, help="0 means all")
 
+    sp = sub.add_parser("harvest", help="rebuild metrics files a run printed to its log")
+    sp.add_argument("slug")
+    sp.add_argument("--out", type=Path, default=Path("results"))
+
     sp = sub.add_parser("fetch", help="download one output file by path")
     sp.add_argument("slug")
     sp.add_argument("name")
@@ -245,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "log":
         print(log(args.slug, args.owner, args.grep, args.tail))
         return 0
+    if args.cmd == "harvest":
+        return 0 if harvest(args.slug, args.owner, args.out) else 1
     if args.cmd == "fetch":
         fetch(args.slug, args.owner, args.name, args.out or Path(Path(args.name).name))
         return 0

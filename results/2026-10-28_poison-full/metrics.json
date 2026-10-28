@@ -1,0 +1,98 @@
+{
+  "cells": [
+    {
+      "config": "no_memory",
+      "rate": 0.0,
+      "attack_success_rate": 0.2,
+      "n_degraded": 0,
+      "macro_f1": 0.395,
+      "retrieval": {
+        "poison_pass_rate": null
+      }
+    },
+    {
+      "config": "memory",
+      "rate": 0.0,
+      "attack_success_rate": 0.27,
+      "n_degraded": 0,
+      "macro_f1": 0.318,
+      "retrieval": {
+        "poison_pass_rate": null
+      }
+    },
+    {
+      "config": "memory",
+      "rate": 0.05,
+      "attack_success_rate": 0.34,
+      "n_degraded": 4,
+      "macro_f1": 0.22,
+      "retrieval": {
+        "poison_pass_rate": 1.0
+      }
+    },
+    {
+      "config": "memory",
+      "rate": 0.1,
+      "attack_success_rate": 0.5,
+      "n_degraded": 5,
+      "macro_f1": 0.188,
+      "retrieval": {
+        "poison_pass_rate": 1.0
+      }
+    },
+    {
+      "config": "memory",
+      "rate": 0.2,
+      "attack_success_rate": 0.56,
+      "n_degraded": 4,
+      "macro_f1": 0.173,
+      "retrieval": {
+        "poison_pass_rate": 1.0
+      }
+    },
+    {
+      "config": "gated_memory",
+      "rate": 0.0,
+      "attack_success_rate": 0.26,
+      "n_degraded": 0,
+      "macro_f1": 0.328,
+      "retrieval": {
+        "poison_pass_rate": null
+      }
+    },
+    {
+      "config": "gated_memory",
+      "rate": 0.05,
+      "attack_success_rate": 0.27,
+      "n_degraded": 0,
+      "macro_f1": 0.314,
+      "retrieval": {
+        "poison_pass_rate": 0.0
+      }
+    },
+    {
+      "config": "gated_memory",
+      "rate": 0.1,
+      "attack_success_rate": 0.26,
+      "n_degraded": 1,
+      "macro_f1": 0.328,
+      "retrieval": {
+        "poison_pass_rate": 0.0
+      }
+    },
+    {
+      "config": "gated_memory",
+      "rate": 0.2,
+      "attack_success_rate": 0.27,
+      "n_degraded": 1,
+      "macro_f1": 0.334,
+      "retrieval": {
+        "poison_pass_rate": 0.0
+      }
+    }
+  ],
+  "n_targets": 100,
+  "n_evaluated": 100,
+  "adversary": "naive",
+  "recovered_from": "kaggle kernel log (teesha5124/verimem-c1-full)"
+}
