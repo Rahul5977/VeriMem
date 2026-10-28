@@ -24,11 +24,12 @@ from agent.baselines import SYSTEMS as BASELINE_SYSTEMS
 from agent.crag import crag
 from core.config import RunConfig
 from core.llm import LLMClient, is_free
-from core.paths import run_dir
+from core.paths import announce_metrics, run_dir
 from eval.datasets import label_counts, load_averitec, sample
 from eval.metrics import score
 from evaluator.score import load_scorer
-from experience.format import write_jsonl
+from experience.format import read_jsonl, write_jsonl
+from experience.store import BetaTrust, ExperienceStore
 from retrieval.store import GoldEvidenceSource, open_store
 from training.verifier import load_verifier
 
@@ -64,6 +65,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--split", default="dev")
     p.add_argument(
+        "--trajectories",
+        type=Path,
+        default=None,
+        help="past trajectories to retrieve as experience (ExpRAG). Required by "
+        "--experience-retrieval.",
+    )
+    p.add_argument(
+        "--experience-retrieval",
+        action="store_true",
+        help="put k retrieved past verifications in the verifier's context",
+    )
+    p.add_argument("--gate-experience", action="store_true", help="C2: evaluator-gate them")
+    p.add_argument("--source-trust", action="store_true", help="C3: drop low-trust sources")
+    p.add_argument(
+        "--verifier-base",
+        action="store_true",
+        help="serve the student model with NO adapter -- the prompted row of the G2 "
+        "table. Travels the same path as an adapter so the comparison is weights-only.",
+    )
+    p.add_argument(
         "--verifier-adapter",
         type=Path,
         default=None,
@@ -82,13 +103,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def run_one(
-    system: str, claims, llm, source, args, scorer=None, cfg=None, verifier=None
+    system: str, claims, llm, source, args, scorer=None, cfg=None, verifier=None, memory=None
 ) -> tuple[list, dict]:
     trajectories = []
     for i, claim in enumerate(claims, start=1):
         try:
             if system == "crag":
-                trajectories.append(crag(claim, llm, source, scorer, cfg, verifier=verifier))
+                trajectories.append(
+                    crag(claim, llm, source, scorer, cfg, memory=memory, verifier=verifier)
+                )
             elif system == "plain_rag":
                 trajectories.append(BASELINE_SYSTEMS[system](claim, llm, source, k=args.k))
             else:
@@ -133,7 +156,23 @@ def main(argv: list[str] | None = None) -> int:
     else:
         systems = [args.system]
 
-    verifier = load_verifier(args.verifier_adapter)
+    # Checked before the endpoint, the evaluator or any model is touched: a bad
+    # invocation should cost seconds, not the whole setup.
+    if args.experience_retrieval:
+        if "crag" not in systems:
+            raise SystemExit(
+                "--experience-retrieval only applies to the crag system; the "
+                "no-retrieval and plain-RAG baselines are defined without it, and "
+                "silently adding it would make those rows something other than what "
+                "the table calls them."
+            )
+        if not args.trajectories:
+            raise SystemExit(
+                "--experience-retrieval needs --trajectories. Retrieving from an empty "
+                "store would report ExpRAG as having no effect."
+            )
+
+    verifier = load_verifier(args.verifier_adapter, base_only=args.verifier_base)
     if verifier is not None:
         if systems != ["crag"]:
             raise SystemExit(
@@ -205,8 +244,35 @@ def main(argv: list[str] | None = None) -> int:
             print("Aborted.")
             return 1
 
-    cfg = RunConfig(split=args.split, limit=args.limit, seed=args.seed, top_k_evidence=args.k)
+    cfg = RunConfig(
+        split=args.split,
+        limit=args.limit,
+        seed=args.seed,
+        top_k_evidence=args.k,
+        experience_retrieval=args.experience_retrieval,
+        gate_experience=args.gate_experience,
+        source_trust=args.source_trust,
+        verifier="finetuned" if args.verifier_adapter else "prompted",
+    )
     cfg.api_model, cfg.api_base_url = llm.model, llm.base_url
+
+    memory = None
+    if args.experience_retrieval:
+        past = read_jsonl(args.trajectories)
+        trust = BetaTrust()
+        for t in past:
+            trust.observe(t)
+        memory = ExperienceStore(
+            past,
+            scorer=scorer,
+            trust=trust,
+            gate_threshold=cfg.gate_threshold,
+            trust_floor=cfg.trust_floor,
+        )
+        print(
+            f"[verimem] experience: {len(memory)} past verifications, k={cfg.k_trajectories}"
+            f"  gate={cfg.gate_experience} trust={cfg.source_trust}"
+        )
     if "crag" in systems:
         print(
             f"[verimem] crag thresholds: upper={cfg.crag_upper_threshold} "
@@ -219,13 +285,14 @@ def main(argv: list[str] | None = None) -> int:
     for system in systems:
         print(f"\n[verimem] === {system} ===")
         trajectories, metrics = run_one(
-            system, claims, llm, source, args, scorer, cfg, verifier=verifier
+            system, claims, llm, source, args, scorer, cfg, verifier=verifier, memory=memory
         )
         all_metrics[system] = metrics
         write_jsonl(trajectories, out / f"{system}_trajectories.jsonl")
         print(metrics["summary"])
 
     all_metrics["usage"] = llm.usage.as_dict()
+    announce_metrics(out, all_metrics)
     (out / "metrics.json").write_text(json.dumps(all_metrics, indent=2), encoding="utf-8")
     _write_notes(out, args, llm, all_metrics, systems)
     print(f"\n[verimem] wrote {out}")

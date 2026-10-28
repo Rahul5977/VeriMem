@@ -40,13 +40,19 @@ DEFAULT_MAX_NEW_TOKENS = 128
 
 @dataclass
 class FinetunedVerifier:
-    """A LoRA adapter over a 4-bit base, exposed with `LLMClient`'s `complete`.
+    """The student verifier -- a 4-bit base, optionally with a LoRA adapter over it.
+
+    **`adapter=None` is the prompted row of the G2 table, not a degenerate case.** The
+    prompted and fine-tuned rows have to travel the same serving path or the comparison
+    measures quantisation, chat templating and decoding settings alongside the weights.
+    Routing the base model through Ollama instead would have made every one of those
+    differ silently.
 
     Deterministic by default (greedy), because the evaluation compares verdicts across
     configurations and sampling noise would be indistinguishable from a real effect.
     """
 
-    adapter: Path
+    adapter: Path | None
     base_model: str = ""
     load_in_4bit: bool = True
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS
@@ -55,14 +61,17 @@ class FinetunedVerifier:
     _tokenizer: Any = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        self.adapter = Path(self.adapter)
-        if not self.adapter.exists():
-            raise SystemExit(
-                f"No adapter at {self.adapter}. Train one with `python -m training.sft` "
-                "and point --verifier-adapter at its `adapter/` directory."
-            )
+        if self.adapter is not None:
+            self.adapter = Path(self.adapter)
+            if not self.adapter.exists():
+                raise SystemExit(
+                    f"No adapter at {self.adapter}. Train one with `python -m training.sft` "
+                    "and point --verifier-adapter at its `adapter/` directory."
+                )
         if not self.base_model:
-            self.base_model = _base_from_adapter(self.adapter) or RunConfig().verifier_model
+            self.base_model = (
+                _base_from_adapter(self.adapter) if self.adapter else None
+            ) or RunConfig().verifier_model
         if self.cache is None:
             self.cache = get_cache("verifier")
 
@@ -92,12 +101,14 @@ class FinetunedVerifier:
             )
 
         base = AutoModelForCausalLM.from_pretrained(self.base_model, **kwargs)
-        self._model = PeftModel.from_pretrained(base, str(self.adapter))
+        self._model = PeftModel.from_pretrained(base, str(self.adapter)) if self.adapter else base
         self._model.eval()
 
         # The adapter directory carries the tokenizer the run actually trained with,
         # including any added tokens; the hub copy may not match it.
-        src = self.adapter if (self.adapter / "tokenizer_config.json").exists() else self.base_model
+        src = self.base_model
+        if self.adapter and (self.adapter / "tokenizer_config.json").exists():
+            src = self.adapter
         self._tokenizer = AutoTokenizer.from_pretrained(str(src))
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
@@ -106,6 +117,9 @@ class FinetunedVerifier:
 
     @property
     def model(self) -> str:
+        """Lands in every trajectory's metadata, so it must name what actually answered."""
+        if self.adapter is None:
+            return f"{self.base_model} (prompted, no adapter)"
         return f"{self.base_model}+{self.adapter.parent.name}"
 
     def complete(self, prompt: str, system: str | None = None, **kwargs: Any) -> LLMResponse:
@@ -124,7 +138,7 @@ class FinetunedVerifier:
         """
         return {
             "base": self.base_model,
-            "adapter": str(self.adapter),
+            "adapter": str(self.adapter) if self.adapter else None,
             "adapter_mtime": _adapter_fingerprint(self.adapter),
             "messages": list(messages),
             "max_tokens": budget,
@@ -187,12 +201,14 @@ class FinetunedVerifier:
         )
 
 
-def _adapter_fingerprint(adapter: Path) -> str:
+def _adapter_fingerprint(adapter: Path | None) -> str:
     """Identify the weights, so retraining into the same path does not serve stale cache.
 
     Keyed on the adapter file's size and mtime rather than its contents: hashing a
     hundred megabytes on every call would cost more than the generation it saves.
     """
+    if adapter is None:
+        return "none"  # the base model's weights are pinned by its hub id
     for name in ("adapter_model.safetensors", "adapter_model.bin"):
         f = adapter / name
         if f.exists():
@@ -201,10 +217,12 @@ def _adapter_fingerprint(adapter: Path) -> str:
     return "unknown"
 
 
-def _base_from_adapter(adapter: Path) -> str | None:
+def _base_from_adapter(adapter: Path | None) -> str | None:
     """Read the base model out of the adapter's own config, so it cannot be mismatched."""
     import json  # noqa: PLC0415
 
+    if adapter is None:
+        return None
     cfg = adapter / "adapter_config.json"
     if not cfg.exists():
         return None
@@ -214,15 +232,32 @@ def _base_from_adapter(adapter: Path) -> str | None:
         return None
 
 
-def load_verifier(adapter: Path | str | None, cfg: RunConfig | None = None) -> Any:
+def load_verifier(
+    adapter: Path | str | None,
+    cfg: RunConfig | None = None,
+    base_only: bool = False,
+) -> Any:
     """A verifier for `run_crag`, or None to mean "use the teacher".
 
-    Resolution order is explicit path, then `VERIMEM_VERIFIER_ADAPTER`, then nothing.
-    A config asking for `verifier="finetuned"` with no adapter anywhere is an error
-    rather than a silent fall back to the prompted model: that would report a
+    Three outcomes, because the G2 table needs all three:
+
+    * `base_only` -- the student with no adapter, which is the "prompted 3B" row.
+    * an adapter path -- the student with that adapter.
+    * neither -- None, and the teacher answers, which is every Phase 1 result.
+
+    Resolution order for the adapter is explicit path, then
+    `VERIMEM_VERIFIER_ADAPTER`. A config asking for `verifier="finetuned"` with no
+    adapter anywhere is an error rather than a silent fall back: that would report a
     fine-tuned row that was never fine-tuned.
     """
     path = adapter or os.environ.get("VERIMEM_VERIFIER_ADAPTER")
+    if base_only:
+        if path:
+            raise SystemExit(
+                "--verifier-base and --verifier-adapter are mutually exclusive: the "
+                "first serves the student with no adapter, the second with one."
+            )
+        return FinetunedVerifier(None)
     if not path:
         if cfg is not None and cfg.verifier == "finetuned":
             raise SystemExit(
