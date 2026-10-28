@@ -39,3 +39,9 @@ Per-cell retrieval detail beyond `poison_pass_rate` was not recoverable.
 stranger at 0.25, below the 0.3 floor — not C3 detecting fabrication. The adaptive
 adversary (`--adversary adaptive`) cites the domains the clean history trusts most and
 is the honest test of H2.
+
+---
+
+**SUPERSEDED (2026-10-28).** `2026-10-28_poison-ablation-naive` re-runs this table under
+the unified verifier prompt, with the two defence ablations added. Use that one. The
+macro-F1 collapse reported above does not replicate.
