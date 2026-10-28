@@ -76,9 +76,14 @@ def test_fake_asserts_the_adversary_verdict():
     assert f.verdict == "Refuted"
 
 
-def test_fake_carries_the_target_claim_so_it_is_retrievable():
+def test_fake_keeps_the_target_content_words_but_is_not_verbatim():
+    """Verbatim copying is defeated for free by the store's self-exclusion, so the
+    attack paraphrases while keeping the words BM25 matches on."""
     t = target()
-    assert fabricate(t, random.Random(1), DEFAULT_DOMAINS, 0).claim == t.claim
+    f = fabricate(t, random.Random(1), DEFAULT_DOMAINS, 0)
+    assert f.claim != t.claim
+    body = t.claim.rstrip(".").lower()
+    assert body[1:] in f.claim.lower()
 
 
 def test_fake_is_marked_poisoned_for_bookkeeping():
