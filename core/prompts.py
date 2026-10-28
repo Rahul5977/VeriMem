@@ -49,3 +49,21 @@ def verifier_user_message(claim: str, evidence_block: str, context_block: str = 
     parts.append(f"Claim: {claim}")
     parts.append(f"Evidence:\n{evidence_block}")
     return "\n\n".join(parts)
+
+
+def prompt_fingerprint() -> str:
+    """A short hash of the verifier prompt, stamped into every run's config.
+
+    The prompt is part of the LLM cache key, so changing one word silently invalidates
+    every cached verify call and makes every number already on disk unreproducible from
+    the current code. That happened once: the prompt existed in two places, they drifted,
+    and unifying them moved the ground under results that had already been reported.
+
+    Recording the fingerprint does not prevent the change -- it makes it *visible*. A
+    results folder whose fingerprint differs from today's was produced by a different
+    prompt, and comparing the two as though they were the same experiment is the mistake
+    this guards against.
+    """
+    import hashlib
+
+    return hashlib.sha256(VERIFIER_SYSTEM.encode("utf-8")).hexdigest()[:12]

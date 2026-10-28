@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 Verifier = Literal["prompted", "finetuned"]
 
@@ -69,15 +69,25 @@ class RunConfig:
     notes: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
+    # Set only by `from_dict` when reading a saved config. Declared as a class
+    # attribute rather than a dataclass field so it stays out of `to_dict`, out of the
+    # cache key, and out of equality -- it describes provenance, not configuration.
+    loaded_prompt_sha: ClassVar[str | None] = None
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def save(self, directory: Path) -> Path:
         import yaml
 
+        from core.prompts import prompt_fingerprint
+
         path = Path(directory) / "config.yaml"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False), encoding="utf-8")
+        # Stamped at save time rather than stored as a field: it is derived from the
+        # code, not chosen by the caller, and a stale value would be worse than none.
+        payload = {**self.to_dict(), "verifier_prompt_sha": prompt_fingerprint()}
+        path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
         return path
 
     @classmethod
@@ -91,9 +101,29 @@ class RunConfig:
         known = {f.name for f in fields(cls)}
         kwargs = {k: v for k, v in data.items() if k in known}
         leftover = {k: v for k, v in data.items() if k not in known}
+        # Provenance, not configuration: it describes the code that produced a run
+        # rather than anything a caller may set, so it is read back separately and
+        # kept out of `extra` (which round-trips as config and would make a saved
+        # config unequal to the one that saved it).
+        sha = leftover.pop("verifier_prompt_sha", None)
         cfg = cls(**kwargs)
         cfg.extra.update(leftover)
+        cfg.loaded_prompt_sha = sha
         return cfg
+
+    @property
+    def prompt_matches_code(self) -> bool | None:
+        """Was this run produced by the verifier prompt the code holds today?
+
+        None when the config predates the stamp. False means the numbers in that folder
+        came from a different prompt and are not comparable with a fresh run -- the
+        failure mode that went unnoticed once already.
+        """
+        from core.prompts import prompt_fingerprint
+
+        if self.loaded_prompt_sha is None:
+            return None
+        return self.loaded_prompt_sha == prompt_fingerprint()
 
     def with_(self, **overrides: Any) -> RunConfig:
         return RunConfig.from_dict({**self.to_dict(), **overrides})
