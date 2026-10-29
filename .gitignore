@@ -64,3 +64,6 @@ service-account*.json
 # Input bundles for GPU-laptop handoffs: data, not code
 verimem-*-inputs.zip
 verimem-*-results.zip
+
+# Figures are regenerated from results/ by report/make_figures.py
+report/figures/*.png
