@@ -1,0 +1,186 @@
+{
+  "no_retrieval": {
+    "n": 500,
+    "accuracy": 0.576,
+    "macro_f1": 0.3244,
+    "unparseable": 0,
+    "per_class": {
+      "Supported": {
+        "precision": 0.5789,
+        "recall": 0.2705,
+        "f1": 0.3687,
+        "support": 122
+      },
+      "Refuted": {
+        "precision": 0.6983,
+        "recall": 0.7967,
+        "f1": 0.7443,
+        "support": 305
+      },
+      "Conflicting evidence": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 38
+      },
+      "Not enough evidence": {
+        "precision": 0.1263,
+        "recall": 0.3429,
+        "f1": 0.1846,
+        "support": 35
+      }
+    },
+    "confusion": {
+      "Supported": {
+        "Supported": 33,
+        "Refuted": 59,
+        "Conflicting evidence": 0,
+        "Not enough evidence": 30
+      },
+      "Refuted": {
+        "Supported": 16,
+        "Refuted": 243,
+        "Conflicting evidence": 0,
+        "Not enough evidence": 46
+      },
+      "Conflicting evidence": {
+        "Supported": 5,
+        "Refuted": 26,
+        "Conflicting evidence": 0,
+        "Not enough evidence": 7
+      },
+      "Not enough evidence": {
+        "Supported": 3,
+        "Refuted": 20,
+        "Conflicting evidence": 0,
+        "Not enough evidence": 12
+      }
+    },
+    "summary": "n=500  accuracy=0.576  macro-F1=0.324\n  Supported              P 0.579  R 0.270  F1 0.369  n=122\n  Refuted                P 0.698  R 0.797  F1 0.744  n=305\n  Conflicting evidence   P 0.000  R 0.000  F1 0.000  n=38\n  Not enough evidence    P 0.126  R 0.343  F1 0.185  n=35"
+  },
+  "plain_rag": {
+    "n": 500,
+    "accuracy": 0.6,
+    "macro_f1": 0.3536,
+    "unparseable": 0,
+    "per_class": {
+      "Supported": {
+        "precision": 0.5478,
+        "recall": 0.5164,
+        "f1": 0.5316,
+        "support": 122
+      },
+      "Refuted": {
+        "precision": 0.7476,
+        "recall": 0.7574,
+        "f1": 0.7524,
+        "support": 305
+      },
+      "Conflicting evidence": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 38
+      },
+      "Not enough evidence": {
+        "precision": 0.1053,
+        "recall": 0.1714,
+        "f1": 0.1304,
+        "support": 35
+      }
+    },
+    "confusion": {
+      "Supported": {
+        "Supported": 63,
+        "Refuted": 38,
+        "Conflicting evidence": 6,
+        "Not enough evidence": 15
+      },
+      "Refuted": {
+        "Supported": 28,
+        "Refuted": 231,
+        "Conflicting evidence": 10,
+        "Not enough evidence": 36
+      },
+      "Conflicting evidence": {
+        "Supported": 12,
+        "Refuted": 26,
+        "Conflicting evidence": 0,
+        "Not enough evidence": 0
+      },
+      "Not enough evidence": {
+        "Supported": 12,
+        "Refuted": 14,
+        "Conflicting evidence": 3,
+        "Not enough evidence": 6
+      }
+    },
+    "summary": "n=500  accuracy=0.600  macro-F1=0.354\n  Supported              P 0.548  R 0.516  F1 0.532  n=122\n  Refuted                P 0.748  R 0.757  F1 0.752  n=305\n  Conflicting evidence   P 0.000  R 0.000  F1 0.000  n=38\n  Not enough evidence    P 0.105  R 0.171  F1 0.130  n=35"
+  },
+  "crag": {
+    "n": 500,
+    "accuracy": 0.546,
+    "macro_f1": 0.3629,
+    "unparseable": 0,
+    "per_class": {
+      "Supported": {
+        "precision": 0.5976,
+        "recall": 0.4016,
+        "f1": 0.4804,
+        "support": 122
+      },
+      "Refuted": {
+        "precision": 0.7757,
+        "recall": 0.6689,
+        "f1": 0.7183,
+        "support": 305
+      },
+      "Conflicting evidence": {
+        "precision": 0.1,
+        "recall": 0.0263,
+        "f1": 0.0417,
+        "support": 38
+      },
+      "Not enough evidence": {
+        "precision": 0.131,
+        "recall": 0.5429,
+        "f1": 0.2111,
+        "support": 35
+      }
+    },
+    "confusion": {
+      "Supported": {
+        "Supported": 49,
+        "Refuted": 26,
+        "Conflicting evidence": 2,
+        "Not enough evidence": 45
+      },
+      "Refuted": {
+        "Supported": 20,
+        "Refuted": 204,
+        "Conflicting evidence": 6,
+        "Not enough evidence": 75
+      },
+      "Conflicting evidence": {
+        "Supported": 9,
+        "Refuted": 22,
+        "Conflicting evidence": 1,
+        "Not enough evidence": 6
+      },
+      "Not enough evidence": {
+        "Supported": 4,
+        "Refuted": 11,
+        "Conflicting evidence": 1,
+        "Not enough evidence": 19
+      }
+    },
+    "summary": "n=500  accuracy=0.546  macro-F1=0.363\n  Supported              P 0.598  R 0.402  F1 0.480  n=122\n  Refuted                P 0.776  R 0.669  F1 0.718  n=305\n  Conflicting evidence   P 0.100  R 0.026  F1 0.042  n=38\n  Not enough evidence    P 0.131  R 0.543  F1 0.211  n=35"
+  },
+  "usage": {
+    "calls": 1705,
+    "cached_calls": 140,
+    "prompt_tokens": 797160,
+    "completion_tokens": 72281,
+    "cost_usd": 0.0
+  }
+}
