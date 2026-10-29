@@ -10,7 +10,8 @@ class that is predicted but never correct scores zero and is counted. That match
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import random
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -185,3 +186,164 @@ def attack_success(
             if was == t.gold_label and got != t.gold_label:
                 result.n_degraded += 1
     return result
+
+
+# --- uncertainty ----------------------------------------------------------------------
+#
+# Macro-F1 on AVeriTeC dev weights four classes equally while two of them have ~36
+# instances each, and every system scores near zero on those. So a quarter of the metric
+# rests on one or two correct predictions, and a handful of claims changing moves the
+# headline by 0.05. That is how CRAG read as 0.414 in one run and 0.363 in another with
+# no change to the pipeline that could explain it.
+#
+# The fix is not more runs -- three seeds costs three times the compute for three points.
+# Resampling the claims of a single run gives the sampling distribution directly, needs
+# no model calls at all, and answers the question actually being asked: would this
+# difference survive a different draw of 500 claims from the same population?
+
+
+@dataclass
+class Interval:
+    """A point estimate with a percentile bootstrap interval."""
+
+    point: float
+    low: float
+    high: float
+    level: float = 0.95
+
+    @property
+    def width(self) -> float:
+        return self.high - self.low
+
+    def __str__(self) -> str:
+        return f"{self.point:.3f} [{self.low:.3f}, {self.high:.3f}]"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "point": round(self.point, 4),
+            "low": round(self.low, 4),
+            "high": round(self.high, 4),
+            "level": self.level,
+        }
+
+
+def pairs_from_confusion(confusion: Mapping[str, Mapping[str, int]]) -> list[tuple[str, str]]:
+    """Expand a confusion matrix back into (gold, predicted) pairs.
+
+    The matrix is a sufficient statistic for every metric here, and bootstrapping
+    resamples claims without regard to order, so the expansion loses nothing that
+    matters. It exists because a run's per-claim file does not always survive -- the
+    G1 re-run came back only as the metrics its kernel printed to the log -- and a
+    confidence interval should not require re-running the experiment.
+    """
+    out: list[tuple[str, str]] = []
+    for gold, row in confusion.items():
+        for pred, count in row.items():
+            out.extend([(gold, pred)] * int(count))
+    return out
+
+
+def bootstrap_metric(
+    gold: Sequence[str],
+    pred: Sequence[str],
+    metric: str = "macro_f1",
+    n_resamples: int = 10_000,
+    level: float = 0.95,
+    seed: int = 13,
+) -> Interval:
+    """Percentile bootstrap over claims.
+
+    Resamples (gold, predicted) pairs with replacement, which treats the evaluation set
+    as a sample from the claim population -- the assumption a reader makes when reading
+    one number as an estimate of a system's quality.
+    """
+    if len(gold) != len(pred):
+        raise ValueError(f"{len(gold)} gold labels but {len(pred)} predictions")
+    if not gold:
+        raise ValueError("nothing to bootstrap")
+
+    rng = random.Random(seed)
+    n = len(gold)
+    point = getattr(score(gold, pred), metric)
+
+    draws: list[float] = []
+    for _ in range(n_resamples):
+        idx = [rng.randrange(n) for _ in range(n)]
+        draws.append(getattr(score([gold[i] for i in idx], [pred[i] for i in idx]), metric))
+    draws.sort()
+
+    tail = (1.0 - level) / 2.0
+    lo = draws[int(tail * n_resamples)]
+    hi = draws[min(int((1.0 - tail) * n_resamples), n_resamples - 1)]
+    return Interval(point=point, low=lo, high=hi, level=level)
+
+
+def bootstrap_difference(
+    gold: Sequence[str],
+    pred_a: Sequence[str],
+    pred_b: Sequence[str],
+    metric: str = "macro_f1",
+    n_resamples: int = 10_000,
+    level: float = 0.95,
+    seed: int = 13,
+) -> Interval:
+    """The interval for A minus B, resampling both systems on the **same** claims.
+
+    This is the comparison that matters and it is not the same as checking whether two
+    separate intervals overlap. Two systems evaluated on one claim set are correlated --
+    they fail on the same hard claims -- so the difference is estimated far more precisely
+    than either absolute score. Overlapping intervals routinely hide a difference that is
+    reliably non-zero, which would read as "no effect" when there is one.
+
+    An interval excluding zero means the sign of the difference is stable across
+    resamples of the claim set.
+    """
+    if not (len(gold) == len(pred_a) == len(pred_b)):
+        raise ValueError("the two systems must be scored on the same claims, in the same order")
+    if not gold:
+        raise ValueError("nothing to bootstrap")
+
+    rng = random.Random(seed)
+    n = len(gold)
+    point = getattr(score(gold, pred_a), metric) - getattr(score(gold, pred_b), metric)
+
+    draws: list[float] = []
+    for _ in range(n_resamples):
+        idx = [rng.randrange(n) for _ in range(n)]
+        g = [gold[i] for i in idx]
+        a = getattr(score(g, [pred_a[i] for i in idx]), metric)
+        b = getattr(score(g, [pred_b[i] for i in idx]), metric)
+        draws.append(a - b)
+    draws.sort()
+
+    tail = (1.0 - level) / 2.0
+    lo = draws[int(tail * n_resamples)]
+    hi = draws[min(int((1.0 - tail) * n_resamples), n_resamples - 1)]
+    return Interval(point=point, low=lo, high=hi, level=level)
+
+
+def proportion_interval(
+    successes: int, trials: int, level: float = 0.95, seed: int = 13, n_resamples: int = 10_000
+) -> Interval:
+    """An interval for a rate like attack success.
+
+    C1's headline numbers are proportions over 100 targets, where the standard error is
+    near 0.05 -- so 0.230 against 0.310 is a far weaker claim than 0.430 against 0.230,
+    and the table should let a reader see which is which.
+    """
+    if trials <= 0:
+        raise ValueError("no trials")
+    rng = random.Random(seed)
+    point = successes / trials
+    outcomes = [1] * successes + [0] * (trials - successes)
+    draws = sorted(
+        sum(outcomes[rng.randrange(trials)] for _ in range(trials)) / trials
+        for _ in range(n_resamples)
+    )
+    tail = (1.0 - level) / 2.0
+    return Interval(
+        point=point,
+        low=draws[int(tail * n_resamples)],
+        high=draws[min(int((1.0 - tail) * n_resamples), n_resamples - 1)],
+        level=level,
+    )
